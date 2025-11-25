@@ -1,17 +1,18 @@
 # api/tracks.py - Роуты для работы с треками
 import email
 from urllib.parse import quote
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request, Header
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request, Header, BackgroundTasks
 from fastapi.responses import StreamingResponse, Response
 import pydantic
 from sqlalchemy.orm import Session
 from database import get_db
 import models
 import schemas
-from auth_utils import get_current_user
+from auth_utils import get_current_user, create_stream_token, decode_token
 import uuid
 import os
 import shutil
+import asyncio
 from pathlib import Path
 
 router = APIRouter()
@@ -126,9 +127,120 @@ async def stream_track(
         }
     )
 
+@router.get("/{track_id}/token")
+async def get_track_token(
+    track_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    track = db.query(models.Track).filter(
+        models.Track.id == track_id,
+        models.Track.user_id == current_user.id
+    ).first()
+    
+    if not track:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Трек не найден"
+        )
+        
+    token = create_stream_token(track_id)
+    return {"token": token, "url": f"/api/tracks/play/{token}"}
+
+@router.get("/play/{token}")
+async def play_track(
+    token: str,
+    request: Request,
+    range: str = Header(None),
+    db: Session = Depends(get_db)
+):
+    try:
+        payload = decode_token(token)
+        if payload.get("type") != "stream":
+            raise HTTPException(status_code=401, detail="Invalid token type")
+        track_id = payload.get("sub")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    track = db.query(models.Track).filter(models.Track.id == track_id).first()
+    
+    if not track:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Трек не найден"
+        )
+    
+    file_path = Path(str(track.file_path))
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Файл не найден на сервере"
+        )
+    
+    file_size = file_path.stat().st_size
+    start = 0
+    end = file_size - 1
+    
+    if range:
+        try:
+            range_str = range.replace("bytes=", "")
+            start_str, end_str = range_str.split("-")
+            if start_str:
+                start = int(start_str)
+            if end_str:
+                end = int(end_str)
+        except ValueError:
+            pass
+            
+    # Ensure valid range
+    if start >= file_size:
+        start = file_size - 1
+    if end >= file_size:
+        end = file_size - 1
+        
+    chunk_size = end - start + 1
+    
+    mime_types = {
+        ".mp3": "audio/mpeg",
+        ".m4a": "audio/mp4",
+        ".wav": "audio/wav",
+        ".flac": "audio/flac"
+    }
+    mime_type = mime_types.get(file_path.suffix, "audio/mpeg")
+    
+    def file_iterator(start_byte, end_byte):
+        with open(file_path, "rb") as file:
+            file.seek(start_byte)
+            remaining = end_byte - start_byte + 1
+            while remaining > 0:
+                chunk_size = min(8192, remaining)
+                chunk = file.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+                remaining -= len(chunk)
+    
+    filename = f"{track.title}{file_path.suffix}"
+    encoded_filename = quote(filename)
+    
+    headers = {
+        "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}",
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(chunk_size),
+        "Content-Range": f"bytes {start}-{end}/{file_size}"
+    }
+    
+    return StreamingResponse(
+        file_iterator(start, end),
+        status_code=status.HTTP_206_PARTIAL_CONTENT,
+        media_type=mime_type,
+        headers=headers
+    )
+
 @router.delete("/{track_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_track(
     track_id: str,
+    background_tasks: BackgroundTasks,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -144,10 +256,32 @@ async def delete_track(
         )
     
     file_path = Path(str(track.file_path))
+    
+    # Try to delete file immediately
     if file_path.exists():
-        file_path.unlink()
+        try:
+            file_path.unlink()
+        except PermissionError:
+            # File is likely in use (streaming). Schedule retry in background.
+            background_tasks.add_task(remove_file_with_retry, file_path)
+        except Exception as e:
+            print(f"Error deleting file {file_path}: {e}")
     
     db.delete(track)
     db.commit()
     
     return None
+
+async def remove_file_with_retry(path: Path, retries=10, delay=1.0):
+    """Attempts to delete a file with retries if it's locked."""
+    for i in range(retries):
+        try:
+            if path.exists():
+                path.unlink()
+            return
+        except PermissionError:
+            await asyncio.sleep(delay)
+        except Exception as e:
+            print(f"Background delete error for {path}: {e}")
+            return
+    print(f"Failed to delete file {path} after {retries} retries")
