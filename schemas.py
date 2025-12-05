@@ -49,3 +49,8 @@ class TrackResponse(BaseModel):
 class TracksList(BaseModel):
     tracks: list[TrackResponse]
     total: int
+
+class StorageInfo(BaseModel):
+    used_space: int
+    storage_limit: int
+    used_percentage: float

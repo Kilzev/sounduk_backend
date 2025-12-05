@@ -62,3 +62,18 @@ async def add_extra_space(
     db.commit()
     db.refresh(current_user)
     return current_user
+
+@router.get("/storage", response_model=schemas.StorageInfo)
+async def get_storage_info(current_user: models.User = Depends(get_current_user)):
+    """
+    Возвращает информацию о заполненности хранилища пользователя.
+    """
+    percentage = 0.0
+    if current_user.storage_limit > 0:
+        percentage = (current_user.used_space / current_user.storage_limit) * 100
+    
+    return {
+        "used_space": current_user.used_space,
+        "storage_limit": current_user.storage_limit,
+        "used_percentage": round(percentage, 2)
+    }

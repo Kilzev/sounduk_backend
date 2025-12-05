@@ -16,6 +16,10 @@ import asyncio
 from pathlib import Path
 from s3_utils import get_s3_client, S3_BUCKET_NAME
 from fastapi.responses import RedirectResponse
+from mutagen import File as MutagenFile
+from mutagen.id3 import ID3, APIC
+from mutagen.mp3 import MP3
+from mutagen.flac import Picture, FLAC
 
 router = APIRouter()
 
@@ -47,6 +51,25 @@ async def upload_track(
     file_size = file.file.tell()
     file.file.seek(0)
 
+    # Extract cover art
+    cover_data = None
+    try:
+        audio = MutagenFile(file.file)
+        if audio:
+            if isinstance(audio, MP3) or file.filename.endswith('.mp3'):
+                if audio.tags:
+                    for tag in audio.tags.values():
+                        if isinstance(tag, APIC):
+                            cover_data = tag.data
+                            break
+            elif isinstance(audio, FLAC) or file.filename.endswith('.flac'):
+                if audio.pictures:
+                    cover_data = audio.pictures[0].data
+        file.file.seek(0)
+    except Exception as e:
+        print(f"Error extracting cover: {e}")
+        file.file.seek(0)
+
     # Проверка лимитов (если не админ)
     if current_user.role != "admin":
         if current_user.used_space + file_size > current_user.storage_limit:
@@ -63,6 +86,16 @@ async def upload_track(
             S3_BUCKET_NAME,
             s3_key
         )
+        
+        if cover_data:
+            cover_key = f"tracks/{current_user.id}/{track_id}.jpg"
+            s3_client.put_object(
+                Bucket=S3_BUCKET_NAME,
+                Key=cover_key,
+                Body=cover_data,
+                ContentType='image/jpeg'
+            )
+            
     except Exception as e:
         print(f"S3 Upload Error: {e}")
         raise HTTPException(
@@ -103,6 +136,40 @@ async def get_tracks(
         "tracks": tracks,
         "total": len(tracks)
     }
+
+@router.get("/{track_id}/cover")
+async def get_track_cover(
+    track_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    track = db.query(models.Track).filter(
+        models.Track.id == track_id
+    ).first()
+    
+    if not track:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Трек не найден"
+        )
+    
+    cover_key = f"tracks/{track.user_id}/{track_id}.jpg"
+    
+    try:
+        s3_client = get_s3_client()
+        s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=cover_key)
+        
+        url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': S3_BUCKET_NAME, 'Key': cover_key},
+            ExpiresIn=3600
+        )
+        return RedirectResponse(url=url)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Обложка не найдена"
+        )
 
 @router.get("/{track_id}/stream")
 async def stream_track(
@@ -226,8 +293,17 @@ async def delete_track(
             detail="Трек не найден"
         )
     
+    # Обновляем использованное место
+    current_user.used_space -= track.file_size
+    if current_user.used_space < 0:
+        current_user.used_space = 0
+
     # Delete from S3 in background
     background_tasks.add_task(delete_s3_file, track.file_path)
+    
+    # Delete cover
+    cover_key = f"tracks/{track.user_id}/{track.id}.jpg"
+    background_tasks.add_task(delete_s3_file, cover_key)
     
     db.delete(track)
     db.commit()
