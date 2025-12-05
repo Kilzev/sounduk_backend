@@ -14,6 +14,11 @@ class User(Base):
     hashed_password = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     
+    # Новые поля для лимитов
+    role = Column(String, default="user") # user, subscriber, admin
+    used_space = Column(Integer, default=0) # Использовано байт
+    storage_limit = Column(Integer, default=314572800) # Лимит байт (300MB по умолчанию)
+
     tracks = relationship("Track", back_populates="owner", cascade="all, delete-orphan")
 
 class Track(Base):

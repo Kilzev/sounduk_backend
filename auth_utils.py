@@ -10,6 +10,7 @@ import models
 from typing import Optional
 
 SECRET_KEY = "your-secret-key-change-in-production"
+ADMIN_SECRET_KEY = "admin-secret-key-change-in-production" # Ключ для админских действий
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 60
 

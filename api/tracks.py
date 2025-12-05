@@ -42,6 +42,19 @@ async def upload_track(
     file_extension = Path(file.filename).suffix
     s3_key = f"tracks/{current_user.id}/{track_id}{file_extension}"
     
+    # Вычисляем размер файла
+    file.file.seek(0, 2)
+    file_size = file.file.tell()
+    file.file.seek(0)
+
+    # Проверка лимитов (если не админ)
+    if current_user.role != "admin":
+        if current_user.used_space + file_size > current_user.storage_limit:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Превышен лимит хранилища. Использовано: {current_user.used_space / 1024 / 1024:.1f}MB из {current_user.storage_limit / 1024 / 1024:.1f}MB"
+            )
+
     # Upload to S3
     try:
         s3_client = get_s3_client()
@@ -57,15 +70,9 @@ async def upload_track(
             detail="Ошибка загрузки файла в хранилище"
         )
     
-    # We don't know the exact size without reading the file, but for S3 it's less critical.
-    # If needed, we can seek(0, 2) then tell() then seek(0) before upload, 
-    # but upload_fileobj might handle stream. Let's approximate or skip size check for now 
-    # or read into memory if files are small (not recommended for large files).
-    # For now, let's set size to 0 or try to get it from headers if available.
-    file_size = 0 
-    if file.size:
-        file_size = file.size
-
+    # Обновляем использованное место
+    current_user.used_space += file_size
+    
     new_track = models.Track(
         id=track_id,
         user_id=current_user.id,

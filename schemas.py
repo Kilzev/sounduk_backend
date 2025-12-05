@@ -17,6 +17,9 @@ class UserResponse(BaseModel):
     username: str
     email: Optional[str]
     created_at: datetime
+    role: str
+    used_space: int
+    storage_limit: int
     
     class Config:
         from_attributes = True
