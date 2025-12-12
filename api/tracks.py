@@ -140,7 +140,6 @@ async def get_tracks(
 @router.get("/{track_id}/cover")
 async def get_track_cover(
     track_id: str,
-    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     track = db.query(models.Track).filter(
