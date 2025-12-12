@@ -158,11 +158,9 @@ async def get_track_cover(
         s3_client = get_s3_client()
         s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=cover_key)
         
-        url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': S3_BUCKET_NAME, 'Key': cover_key},
-            ExpiresIn=3600
-        )
+        # Return public URL
+        endpoint_url = os.getenv("S3_ENDPOINT_URL")
+        url = f"{endpoint_url}/{S3_BUCKET_NAME}/{cover_key}"
         return RedirectResponse(url=url)
     except Exception:
         raise HTTPException(
