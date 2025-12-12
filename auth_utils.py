@@ -8,9 +8,13 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 from typing import Optional
+import os
+from dotenv import load_dotenv
 
-SECRET_KEY = "your-secret-key-change-in-production"
-ADMIN_SECRET_KEY = "admin-secret-key-change-in-production" # Ключ для админских действий
+load_dotenv()
+
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "admin-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 60
 
