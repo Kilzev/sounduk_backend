@@ -158,12 +158,16 @@ async def get_track_cover(
         s3_client = get_s3_client()
         s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=cover_key)
         
-        url = s3_client.generate_presigned_url(
-            'get_object',
-            Params={'Bucket': S3_BUCKET_NAME, 'Key': cover_key},
-            ExpiresIn=3600
+        # Получаем объект с S3 и возвращаем его напрямую (проксирование)
+        response = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=cover_key)
+        
+        return StreamingResponse(
+            response['Body'].iter_chunks(chunk_size=8192),
+            media_type='image/jpeg',
+            headers={
+                'Cache-Control': 'public, max-age=86400',  # Кешируем на 24 часа
+            }
         )
-        return RedirectResponse(url=url)
     except Exception:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
