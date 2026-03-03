@@ -19,10 +19,20 @@ async def register(user_data: schemas.UserCreate, db: Session = Depends(get_db))
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Пользователь с таким именем уже существует"
         )
+
+    # if user_data.email:
+    #     existing_email = db.query(models.User).filter(
+    #         models.User.email == user_data.email
+    #     ).first()
+    #     if existing_email:
+    #         raise HTTPException(
+    #             status_code=status.HTTP_400_BAD_REQUEST,
+    #             detail="Пользователь с таким email уже существует"
+    #         )
     
     new_user = models.User(
         username=user_data.username,
-        email=user_data.email,
+        # email=user_data.email,
         hashed_password=hash_password(user_data.password)
     )
     

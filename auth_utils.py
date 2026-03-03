@@ -79,4 +79,20 @@ async def get_current_user(
             detail="Пользователь не найден"
         )
     
+    if user.is_restricted:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Аккаунт ограничен"
+        )
+    
     return user
+
+async def get_current_admin_user(
+    current_user: models.User = Depends(get_current_user)
+) -> models.User:
+    if not current_user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Недостаточно прав"
+        )
+    return current_user

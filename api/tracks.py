@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File,
 from fastapi.responses import StreamingResponse, Response
 import pydantic
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from database import get_db
 import models
 import schemas
@@ -30,6 +31,19 @@ async def upload_track(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    # Проверка лимита места
+    total_usage = db.query(func.sum(models.Track.file_size)).filter(
+        models.Track.user_id == current_user.id
+    ).scalar() or 0
+    
+    # Размер загружаемого файла (может быть недоступен точно до сохранения, но попробуем оценить)
+    # Здесь мы проверяем только текущее использование. Строгую проверку сделаем после сохранения.
+    if total_usage >= current_user.storage_limit:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Превышен лимит хранилища"
+        )
+
     if not file.filename or not file.filename.endswith(('.mp3', '.m4a', '.wav', '.flac')):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -47,6 +61,14 @@ async def upload_track(
         shutil.copyfileobj(file.file, buffer)
     
     file_size = os.path.getsize(file_path)
+    
+    # Вторая, точная проверка после загрузки
+    if total_usage + file_size > current_user.storage_limit:
+        os.remove(file_path) # Удаляем файл, если не влезает
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Недостаточно места. Лимит: {current_user.storage_limit // 1024 // 1024} MB"
+        )
     
     new_track = models.Track(
         id=track_id,
@@ -85,10 +107,12 @@ async def stream_track(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    track = db.query(models.Track).filter(
-        models.Track.id == track_id,
-        models.Track.user_id == current_user.id
-    ).first()
+    query = db.query(models.Track).filter(models.Track.id == track_id)
+    # Если не админ, показываем только свои треки
+    if not getattr(current_user, 'is_admin', False):
+        query = query.filter(models.Track.user_id == current_user.id)
+        
+    track = query.first()
     
     if not track:
         raise HTTPException(
@@ -244,10 +268,12 @@ async def delete_track(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    track = db.query(models.Track).filter(
-        models.Track.id == track_id,
-        models.Track.user_id == current_user.id
-    ).first()
+    query = db.query(models.Track).filter(models.Track.id == track_id)
+    # Если не админ, можно удалять только свои треки
+    if not getattr(current_user, 'is_admin', False):
+        query = query.filter(models.Track.user_id == current_user.id)
+        
+    track = query.first()
     
     if not track:
         raise HTTPException(
