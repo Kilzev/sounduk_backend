@@ -11,10 +11,11 @@ import models
 import schemas
 from auth_utils import get_current_user, create_stream_token, decode_token
 import uuid
+# from s3_utils import upload_file_to_s3, generate_presigned_url, delete_file_from_s3
 import os
 import shutil
-import asyncio
 from pathlib import Path
+import asyncio
 
 router = APIRouter()
 
@@ -50,42 +51,49 @@ async def upload_track(
             detail="Неподдерживаемый формат файла"
         )
     
+    file_extension = os.path.splitext(file.filename)[1]
     track_id = str(uuid.uuid4())
+    
+    # LOCAL STORAGE
     user_dir = UPLOAD_DIR / str(current_user.id)
     user_dir.mkdir(exist_ok=True)
-    
-    file_extension = Path(file.filename).suffix
-    file_path = user_dir / f"{track_id}{file_extension}"
-    
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    file_size = os.path.getsize(file_path)
-    
-    # Вторая, точная проверка после загрузки
-    if total_usage + file_size > current_user.storage_limit:
-        os.remove(file_path) # Удаляем файл, если не влезает
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Недостаточно места. Лимит: {current_user.storage_limit // 1024 // 1024} MB"
+    file_path_local = user_dir / f"{track_id}{file_extension}"
+
+    try:
+        with open(file_path_local, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        file_size = os.path.getsize(file_path_local)
+
+        if total_usage + file_size > current_user.storage_limit:
+            os.remove(file_path_local) # Clean up
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Недостаточно места"
+            )
+            
+        new_track = models.Track(
+            id=track_id,
+            user_id=current_user.id,
+            title=title,
+            artist=artist,
+            album=album,
+            duration=duration,
+            file_path=str(file_path_local), # Store local path
+            file_size=file_size
         )
-    
-    new_track = models.Track(
-        id=track_id,
-        user_id=current_user.id,
-        title=title,
-        artist=artist,
-        album=album,
-        duration=duration,
-        file_path=str(file_path),
-        file_size=file_size
-    )
-    
-    db.add(new_track)
-    db.commit()
-    db.refresh(new_track)
-    
-    return new_track
+        
+        db.add(new_track)
+        db.commit()
+        db.refresh(new_track)
+        
+        return new_track
+        
+    except Exception as e:
+        print(f"Error uploading file: {e}")
+        if 'file_path_local' in locals() and file_path_local.exists():
+             os.remove(file_path_local)
+        raise HTTPException(status_code=500, detail="Ошибка при загрузке файла")
 
 @router.get("", response_model=schemas.TracksList)
 async def get_tracks(
@@ -120,36 +128,37 @@ async def stream_track(
             detail="Трек не найден"
         )
     
+    # Check if this is a path (local) or S3 key
     file_path = Path(str(track.file_path))
-    if not file_path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Файл не найден на сервере"
-        )
     
-    mime_types = {
-        ".mp3": "audio/mpeg",
-        ".m4a": "audio/mp4",
-        ".wav": "audio/wav",
-        ".flac": "audio/flac"
-    }
-    mime_type = mime_types.get(file_path.suffix, "audio/mpeg")
-    
-    def file_iterator():
-        with open(file_path, "rb") as file:
-            while chunk := file.read(8192):
-                yield chunk
-    
-    filename = f"{track.title}{file_path.suffix}"
-    encoded_filename = quote(filename)
-    
-    return StreamingResponse(
-        file_iterator(),
-        media_type=mime_type,
-        headers={
-            "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}"
+    if file_path.exists():
+        # Local file
+        mime_types = {
+            ".mp3": "audio/mpeg",
+            ".m4a": "audio/mp4",
+            ".wav": "audio/wav",
+            ".flac": "audio/flac"
         }
-    )
+        mime_type = mime_types.get(file_path.suffix, "audio/mpeg")
+        
+        def file_iterator():
+            with open(file_path, "rb") as file:
+                while chunk := file.read(8192):
+                    yield chunk
+        
+        filename = f"{track.title}{file_path.suffix}"
+        encoded_filename = quote(filename)
+        
+        return StreamingResponse(
+            file_iterator(),
+            media_type=mime_type,
+            headers={
+                "Content-Disposition": f"inline; filename*=UTF-8''{encoded_filename}"
+            }
+        )
+    else:
+        # S3 fallback (not configured now)
+        raise HTTPException(status_code=404, detail="Файл не найден локально")
 
 @router.get("/{track_id}/token")
 async def get_track_token(
@@ -194,6 +203,7 @@ async def play_track(
             detail="Трек не найден"
         )
     
+    # Local File Stream with Range support
     file_path = Path(str(track.file_path))
     if not file_path.exists():
         raise HTTPException(
@@ -281,33 +291,15 @@ async def delete_track(
             detail="Трек не найден"
         )
     
+    # Try to delete local file
     file_path = Path(str(track.file_path))
-    
-    # Try to delete file immediately
     if file_path.exists():
         try:
             file_path.unlink()
-        except PermissionError:
-            # File is likely in use (streaming). Schedule retry in background.
-            background_tasks.add_task(remove_file_with_retry, file_path)
-        except Exception as e:
-            print(f"Error deleting file {file_path}: {e}")
-    
+        except Exception:
+            pass # Ignore deletion errors
+
     db.delete(track)
     db.commit()
     
     return None
-
-async def remove_file_with_retry(path: Path, retries=10, delay=1.0):
-    """Attempts to delete a file with retries if it's locked."""
-    for i in range(retries):
-        try:
-            if path.exists():
-                path.unlink()
-            return
-        except PermissionError:
-            await asyncio.sleep(delay)
-        except Exception as e:
-            print(f"Background delete error for {path}: {e}")
-            return
-    print(f"Failed to delete file {path} after {retries} retries")
