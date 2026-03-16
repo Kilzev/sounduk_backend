@@ -84,6 +84,13 @@ async def get_current_user(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Аккаунт ограничен"
         )
+        
+    # Проверка истечения премиума и откат до базового 1 ГБ
+    if user.is_premium and user.premium_expires_at:
+        if datetime.utcnow() > user.premium_expires_at:
+            user.is_premium = False
+            user.storage_limit = 1073741824 # 1 GB
+            db.commit()
     
     return user
 

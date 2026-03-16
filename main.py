@@ -1,7 +1,7 @@
 # main.py - Точка входа приложения
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api import auth, tracks, admin, users, payments
+from api import auth, tracks, admin, users, payments, albums
 from database import engine, Base
 import os
 
@@ -32,6 +32,7 @@ app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(tracks.router, prefix="/api/tracks", tags=["Tracks"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(payments.router, prefix="/api/payments", tags=["Payments"])
+app.include_router(albums.router, prefix="/api/albums", tags=["Albums"])
 
 @app.get("/")
 async def root():

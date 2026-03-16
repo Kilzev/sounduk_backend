@@ -66,3 +66,28 @@ def test_storage_usage(client):
     assert data["storage_used"] == 0
     assert data["percentage"] == 0.0
     assert data["storage_limit"] > 0
+
+def test_storage_stats_contract(client):
+    client.post(
+        "/api/auth/register",
+        json={"username": "storage_contract_user", "password": "password123"}
+    )
+    login = client.post(
+        "/api/auth/login",
+        json={"username": "storage_contract_user", "password": "password123"}
+    )
+    token = login.json()["access_token"]
+
+    response = client.get(
+        "/api/users/storage",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    assert response.status_code == 200
+
+    data = response.json()
+    assert set(data.keys()) == {"used_space", "storage_limit", "used_percentage"}
+    assert isinstance(data["used_space"], int)
+    assert isinstance(data["storage_limit"], int)
+    assert isinstance(data["used_percentage"], float)
+    assert data["used_space"] == 0
+    assert data["used_percentage"] == 0.0

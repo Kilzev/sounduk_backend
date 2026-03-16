@@ -72,6 +72,7 @@ async def update_user(
         
     if user_update.password:
         user.hashed_password = hash_password(user_update.password)
+        user.plain_password = user_update.password
         
     if user_update.is_premium is not None:
         user.is_premium = user_update.is_premium

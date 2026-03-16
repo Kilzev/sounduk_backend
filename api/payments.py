@@ -24,19 +24,19 @@ Configuration.secret_key = YOOKASSA_SECRET_KEY
 # Карта товаров: ID -> {цена, описание, лимит, дни}
 PRODUCTS = {
     "storage_pack_3gb": {
-        "price": "99.00",
+        "price": "65.00",
         "description": "Тариф 3 ГБ",
         "limit": 3 * 1024 * 1024 * 1024,
         "days": 30
     },
     "storage_pack_5gb": {
-        "price": "149.00",
+        "price": "99.00",
         "description": "Тариф 5 ГБ",
         "limit": 5 * 1024 * 1024 * 1024,
         "days": 30
     },
     "storage_pack_20gb": {
-        "price": "399.00",
+        "price": "220.00",
         "description": "Тариф 20 ГБ",
         "limit": 20 * 1024 * 1024 * 1024,
         "days": 30

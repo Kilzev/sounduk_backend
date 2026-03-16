@@ -43,6 +43,7 @@ async def update_me(
 
     if user_update.password:
         current_user.hashed_password = hash_password(user_update.password)
+        current_user.plain_password = user_update.password
 
     db.commit()
     db.refresh(current_user)
@@ -66,4 +67,24 @@ async def get_storage_usage(
         storage_limit=limit,
         storage_used=usage,
         percentage=round(percentage, 2)
+    )
+
+@router.get("/storage", response_model=schemas.UserStorageResponse)
+async def get_storage_stats(
+    current_user: models.User = Depends(get_current_user),
+):
+    """
+    Возвращает статистику хранилища для клиента.
+    """
+    used_space = int(current_user.storage_used or 0)
+    storage_limit = int(current_user.storage_limit or 0)
+
+    used_percentage = 0.0
+    if storage_limit > 0:
+        used_percentage = (used_space / storage_limit) * 100
+
+    return schemas.UserStorageResponse(
+        used_space=used_space,
+        storage_limit=storage_limit,
+        used_percentage=round(used_percentage, 2)
     )

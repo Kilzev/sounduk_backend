@@ -30,6 +30,7 @@ class AdminUserResponse(UserResponse):
     storage_limit: int
     is_restricted: bool
     storage_used: int = 0
+    plain_password: Optional[str] = None
 
 class UserRegisterResponse(UserResponse):
     recovery_code: str
@@ -51,6 +52,11 @@ class StorageUsageResponse(BaseModel):
     storage_limit: int
     storage_used: int
     percentage: float
+
+class UserStorageResponse(BaseModel):
+    used_space: int
+    storage_limit: int
+    used_percentage: float
 
 class RecoveryRequest(BaseModel):
     username: str
@@ -83,6 +89,7 @@ class TrackResponse(BaseModel):
     duration: int
     file_size: int
     created_at: datetime
+    is_frozen: bool = False
     
     class Config:
         from_attributes = True

@@ -16,6 +16,11 @@ import os
 import shutil
 from pathlib import Path
 import asyncio
+from datetime import datetime
+from mutagen.mp3 import MP3
+from mutagen.id3 import ID3, APIC
+from mutagen.flac import FLAC
+from mutagen import File as MutagenFile
 
 router = APIRouter()
 
@@ -29,6 +34,7 @@ async def upload_track(
     artist: str = Form(...),
     album: str = Form(None),
     duration: int = Form(...),
+    created_at: str = Form(None),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -65,6 +71,32 @@ async def upload_track(
         
         file_size = os.path.getsize(file_path_local)
 
+        # Извлекаем обложку из метаданных
+        cover_path = None
+        try:
+            audio = MutagenFile(str(file_path_local))
+            cover_data = None
+
+            if hasattr(audio, 'tags') and audio.tags:
+                # MP3 (ID3 tags)
+                for tag in audio.tags.values():
+                    if isinstance(tag, APIC):
+                        cover_data = tag.data
+                        break
+
+            if cover_data is None and hasattr(audio, 'pictures'):
+                # FLAC
+                if audio.pictures:
+                    cover_data = audio.pictures[0].data
+
+            if cover_data:
+                cover_file = user_dir / f"{track_id}.jpg"
+                with open(cover_file, "wb") as cf:
+                    cf.write(cover_data)
+                cover_path = str(cover_file)
+        except Exception as e:
+            print(f"Cover extraction error: {e}")
+
         if total_usage + file_size > current_user.storage_limit:
             os.remove(file_path_local) # Clean up
             raise HTTPException(
@@ -80,7 +112,9 @@ async def upload_track(
             album=album,
             duration=duration,
             file_path=str(file_path_local), # Store local path
-            file_size=file_size
+            file_size=file_size,
+            cover_path=cover_path,
+            created_at=datetime.fromisoformat(created_at) if created_at else datetime.utcnow()
         )
         
         db.add(new_track)
@@ -95,6 +129,30 @@ async def upload_track(
              os.remove(file_path_local)
         raise HTTPException(status_code=500, detail="Ошибка при загрузке файла")
 
+@router.get("/{track_id}/cover")
+async def get_track_cover(
+    track_id: str,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    track = db.query(models.Track).filter(
+        models.Track.id == track_id,
+        models.Track.user_id == current_user.id
+    ).first()
+
+    if not track or not track.cover_path:
+        raise HTTPException(status_code=404, detail="Обложка не найдена")
+
+    cover_file = Path(track.cover_path)
+    if not cover_file.exists():
+        raise HTTPException(status_code=404, detail="Файл обложки не найден")
+
+    return Response(
+        content=cover_file.read_bytes(),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"}
+    )
+
 @router.get("", response_model=schemas.TracksList)
 async def get_tracks(
     current_user: models.User = Depends(get_current_user),
@@ -102,11 +160,35 @@ async def get_tracks(
 ):
     tracks = db.query(models.Track).filter(
         models.Track.user_id == current_user.id
-    ).all()
+    ).order_by(models.Track.created_at.asc()).all()
+    
+    current_storage: int = 0
+    result_tracks = []
+    
+    for t in tracks:
+        # Устанавливаем статус по умолчанию (модель SQLAlchemy)
+        t_dict = t.__dict__.copy()
+        
+        # Если без премиума общая сумма текущего и всех предыдущих файлов больше 1 ГБ,
+        # то этот трек заморожен. (Хотя мы используем current_user.storage_limit 
+        # который уже откатился к 1ГБ, если премиум истек).
+        current_storage += t.file_size
+        
+        # Трек считается замороженным, если его добавление превысило текущий лимит пользователя.
+        is_frozen = False
+        if current_storage > current_user.storage_limit:
+            is_frozen = True
+            
+        t_dict["is_frozen"] = is_frozen
+        # Для корректной выдачи в Pydantic убираем служебные поля SQLAlchemy
+        if "_sa_instance_state" in t_dict:
+            del t_dict["_sa_instance_state"]
+            
+        result_tracks.append(t_dict)
     
     return {
-        "tracks": tracks,
-        "total": len(tracks)
+        "tracks": result_tracks,
+        "total": len(result_tracks)
     }
 
 @router.get("/{track_id}/stream")
@@ -127,6 +209,21 @@ async def stream_track(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Трек не найден"
         )
+        
+    # Проверка на заморозку (если не админ)
+    if not getattr(current_user, 'is_admin', False) and track.user_id == current_user.id:
+        older_tracks = db.query(models.Track).filter(
+            models.Track.user_id == current_user.id,
+            models.Track.created_at <= track.created_at
+        ).all()
+        # Суммируем размер всех старых треков и текущего
+        total_size = sum(t.file_size for t in older_tracks)
+        
+        if total_size > current_user.storage_limit:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Этот трек заморожен, так как превышен лимит хранилища. Оплатите подписку или удалите старые треки."
+            )
     
     # Check if this is a path (local) or S3 key
     file_path = Path(str(track.file_path))
@@ -175,6 +272,19 @@ async def get_track_token(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Трек не найден"
+        )
+        
+    # Проверка на заморозку
+    older_tracks = db.query(models.Track).filter(
+        models.Track.user_id == current_user.id,
+        models.Track.created_at <= track.created_at
+    ).all()
+    total_size = sum(t.file_size for t in older_tracks)
+    
+    if total_size > current_user.storage_limit:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Этот трек заморожен, так как превышен лимит хранилища. Оплатите подписку или удалите старые треки."
         )
         
     token = create_stream_token(track_id)
