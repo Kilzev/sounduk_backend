@@ -1,0 +1,156 @@
+CLAUDE CODE RULES - Sounduk API FastAPI Project
+
+=== ENTRY POINT ===
+⭐ ALWAYS start by reading context/index.md
+This is your map to the entire project documentation and structure.
+
+=== CORE PRINCIPLES ===
+
+1. ARCHITECTURE COMPLIANCE
+   - Follow guidelines in context/backend_logic.md
+   - All handlers must be async (async def)
+   - Use FastAPI Dependency Injection for get_db()
+   - Validate with Pydantic v2 (schemas.py)
+   - Keep business logic in separate utility files (auth_utils, s3_utils, etc)
+
+2. DATABASE OPERATIONS
+   - Refer to context/db_schema.md for tables and relationships
+   - Never assume column names - check models.py
+   - All ORM queries use SQLAlchemy 2.0 syntax (Mapped, mapped_column)
+   - Currently using SQLite with Base.metadata.create_all()
+   - TODO: Plan Alembic migration when upgrading
+
+3. API ENDPOINTS
+   - Check context/system_map.md for all existing endpoints
+   - Every new endpoint must be added to system_map.md (table)
+   - Every new endpoint must be documented in task_log.md
+   - Follow existing patterns in api/*.py files
+
+4. SECURITY RULES
+   - All protected routes need get_current_user() dependency
+   - JWT tokens created in auth_utils.py
+   - Password hashing: argon2 via passlib
+   - Rate limiting exists for registration (3 per IP per 24h)
+   - CORS currently open for dev (KI-001: needs restriction for prod)
+
+5. FILE OPERATIONS & INTEGRATIONS
+   - S3 storage: use s3_utils.py functions
+   - Database backups: handled by db_backup.py (periodic, hourly)
+   - Payments: YooKassa API via yookassa SDK
+   - Email: SMTP configuration in .env (send_verification_email, etc)
+
+=== WORKFLOW FOR NEW FEATURES ===
+
+When adding a new endpoint:
+  1. Read context/backend_logic.md (patterns)
+  2. Read context/system_map.md (see similar endpoint)
+  3. Create async function in api/*.py
+  4. Add Pydantic schema to schemas.py (if input/output needed)
+  5. Add row to system_map.md endpoints table
+  6. Add entry to task_log.md
+  7. Test with ./context/scripts/test_coverage.sh
+  8. Commit with: git commit -m "feat: Add endpoint /api/..."
+
+When modifying database:
+  1. Update models.py (SQLAlchemy model)
+  2. Update schemas.py (Pydantic response)
+  3. NOTE: No Alembic yet - changes auto-created on restart (dev only)
+  4. TODO: Migrate to Alembic for production
+
+=== HELPFUL SCRIPTS ===
+
+- ./context/scripts/run_dev.sh         → Start dev server (port 8000)
+- ./context/scripts/test_coverage.sh   → Run pytest with coverage report
+- ./context/scripts/full_migrate.sh    → Placeholder for Alembic (when added)
+
+=== FILE LOCATIONS QUICK REFERENCE ===
+
+Core Files:
+  main.py                    → Entry point, FastAPI app config, lifespan
+  database.py                → SQLAlchemy engine, SessionLocal, get_db()
+  models.py                  → ORM models (User, Track, Album, Payment)
+  schemas.py                 → Pydantic validation (DTO)
+
+Utilities:
+  auth_utils.py              → JWT, password hashing
+  email_utils.py             → Email sending (verify, reset)
+  s3_utils.py                → S3 file operations
+  db_backup.py               → Periodic S3 database backups
+
+API Routes:
+  api/auth.py                → /api/auth/* (register, login, verify)
+  api/tracks.py              → /api/tracks/* (upload, stream, cover)
+  api/albums.py              → /api/albums/* (create, update, tracks)
+  api/users.py               → /api/users/* (profile, storage info)
+  api/payments.py            → /api/payments/* (YooKassa)
+  api/admin.py               → /api/admin/* (users management)
+
+Context Docs (THIS PROJECT'S KNOWLEDGE BASE):
+  context/index.md           → START HERE (overview & quick links)
+  context/backend_logic.md   → Coding style, architecture decisions
+  context/db_schema.md       → Database structure & relationships
+  context/system_map.md      → All endpoints, middleware, services map
+  context/task_log.md        → Change history and current work status
+
+=== CRITICAL CONFIGURATION ===
+
+Environment Variables (in .env):
+  - SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD (email)
+  - AWS_ACCESS_KEY, AWS_SECRET_KEY (S3)
+  - YOOKASSA_SHOP_ID, YOOKASSA_API_KEY (payments)
+  - DATABASE_URL (currently sqlite, auto-configured)
+
+Known Issues (context/task_log.md):
+  KI-001: CORS open for all origins (need to restrict for prod)
+  KI-002: No Alembic migrations (using create_all)
+  KI-003: No Docker (needed for deployment)
+
+=== VERSION & DEPENDENCIES ===
+
+Python: 3.9+
+FastAPI: 0.115.0
+SQLAlchemy: 2.0.36
+Pydantic: 2.9.2+
+Uvicorn: 0.32.0 (ASGI server)
+
+=== GIT COMMIT CONVENTION ===
+
+Format: git commit -m "type: description"
+
+Types:
+  - feat: New feature (endpoint, integration)
+  - fix: Bug fix
+  - refactor: Code reorganization (no behavior change)
+  - test: Test additions/fixes
+  - docs: Documentation (not code changes)
+  - chore: Dependencies, config
+
+Example:
+  git commit -m "feat: Add playlist support to albums endpoint"
+
+=== EVERY TIME YOU CREATE ENDPOINT OR SERVICE ===
+
+✅ Update context/system_map.md (add to endpoints table)
+✅ Update context/task_log.md (add history entry)
+✅ Test with test_coverage.sh
+✅ Follow async/Pydantic patterns from context/backend_logic.md
+✅ Commit with proper convention
+
+=== BEFORE CLOSING SESSION ===
+
+If you made changes:
+  1. Run ./context/scripts/test_coverage.sh to verify
+  2. Update context/task_log.md if work status changed
+  3. Check that context/system_map.md is up-to-date
+  4. Commit with "git commit -m" using convention above
+
+=== FOR FUTURE CLAUDE SESSIONS ===
+
+Always start with: context/index.md (your north star)
+Then check: context/system_map.md (what exists now)
+Then refer to: context/backend_logic.md (how to implement)
+
+---
+Last Updated: 2026-04-22
+Project: Sounduk API (FastAPI + Flutter)
+Region: Russian language support (Русский)
