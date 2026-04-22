@@ -1,20 +1,36 @@
 # main.py - Точка входа приложения
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from api import auth, tracks, admin, users, payments, albums
 from database import engine, Base
+from db_backup import download_db_from_s3, upload_db_to_s3, start_periodic_backup, stop_periodic_backup
 import os
 
-# Создаём таблицы в БД при запуске
-Base.metadata.create_all(bind=engine)
 
-# Создаём папку для хранения файлов
-os.makedirs("uploads", exist_ok=True)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # --- Startup ---
+    # Пытаемся восстановить БД с S3 если локальной нет
+    download_db_from_s3()
+    # Создаём таблицы (если БД новая)
+    Base.metadata.create_all(bind=engine)
+    os.makedirs("uploads", exist_ok=True)
+    # Запускаем периодический бэкап
+    start_periodic_backup()
+
+    yield
+
+    # --- Shutdown ---
+    stop_periodic_backup()
+    upload_db_to_s3()
+
 
 app = FastAPI(
     title="Sounduk API",
     description="Звуковое облако",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Разрешаем запросы с Flutter приложения

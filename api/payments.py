@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 import schemas
-from auth_utils import get_current_user
+from auth_utils import get_current_user, get_verified_user
 from datetime import datetime, timedelta
 from yookassa import Configuration, Payment
 from yookassa.domain.notification import WebhookNotification
@@ -72,7 +72,7 @@ def grant_premium_access(db: Session, user: models.User, product_id: str):
 @router.post("/create", response_model=schemas.PaymentCreateResponse)
 async def create_payment(
     request: schemas.PaymentRequest,
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(get_verified_user),
     db: Session = Depends(get_db)
 ):
     """

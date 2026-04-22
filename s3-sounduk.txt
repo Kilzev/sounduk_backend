@@ -1,0 +1,23 @@
+Access key
+be9b067dfb8541e8a18f900d7bbb23ac
+
+Secret key
+25c26b33a9954b95994f8e87c97ea058
+
+
+S3_ENDPOINT_URL=https://s3.ru-7.storage.selcloud.ru
+S3_REGION_NAME=ru-7
+S3_ACCESS_KEY_ID=67f5e82a69bc4fbe8cac765cce0f7c5a
+S3_SECRET_ACCESS_KEY=aeb57a22a877432ba2837c02bd35f07b
+S3_BUCKET_NAME=sounduk
+
+
+Access key
+67f5e82a69bc4fbe8cac765cce0f7c5a
+
+
+Secret key
+aeb57a22a877432ba2837c02bd35f07b
+
+ADMINSECRET
+dd824c4847032b22df369acd4cde6f6f87a46b1ceafd1b32a96a307a1df806dd

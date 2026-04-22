@@ -9,7 +9,7 @@ from sqlalchemy import func
 from database import get_db
 import models
 import schemas
-from auth_utils import get_current_user, create_stream_token, decode_token
+from auth_utils import get_current_user, get_verified_user, create_stream_token, decode_token
 import uuid
 # from s3_utils import upload_file_to_s3, generate_presigned_url, delete_file_from_s3
 import os
@@ -35,7 +35,7 @@ async def upload_track(
     album: str = Form(None),
     duration: int = Form(...),
     created_at: str = Form(None),
-    current_user: models.User = Depends(get_current_user),
+    current_user: models.User = Depends(get_verified_user),
     db: Session = Depends(get_db)
 ):
     # Проверка лимита места

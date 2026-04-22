@@ -11,20 +11,21 @@ class User(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     username: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
-    # email: Mapped[Optional[str]] = mapped_column(String, unique=True, index=True, nullable=True)
+    email: Mapped[str] = mapped_column(String, unique=True, index=True, nullable=False)
     hashed_password: Mapped[str] = mapped_column(String, nullable=False)
-    plain_password: Mapped[Optional[str]] = mapped_column(String, nullable=True) # Для удобства просмотра админом (небезопасно для продакшена!)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    
-    # Новые поля для админки
+
+    # Email-верификация
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    verification_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    code_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # Админка
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_premium: Mapped[bool] = mapped_column(Boolean, default=False)
     premium_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     storage_limit: Mapped[int] = mapped_column(BigInteger, default=1073741824) # 1 GB default
     is_restricted: Mapped[bool] = mapped_column(Boolean, default=False)
-    
-    # Резервный доступ (храним зашифрованным, но обратимым, чтобы показывать пользователю)
-    recovery_code_enc: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     tracks: Mapped[List["Track"]] = relationship("Track", back_populates="owner", cascade="all, delete-orphan")
     payments: Mapped[List["Payment"]] = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
@@ -68,8 +69,8 @@ class Album(Base):
     """Таблица альбомов"""
     __tablename__ = "albums"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
-    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), primary_key=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     cover_art: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
@@ -86,4 +87,25 @@ class IpBlock(Base):
     ip_address: Mapped[str] = mapped_column(String, primary_key=True, index=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     blocked_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+class RegistrationLimit(Base):
+    """Лимит регистраций по IP (антифрод)"""
+    __tablename__ = "registration_limits"
+
+    ip_address: Mapped[str] = mapped_column(String, primary_key=True)
+    registrations_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_registration_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+class AdminAuditLog(Base):
+    """Журнал действий администратора"""
+    __tablename__ = "admin_audit_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    admin_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
+    admin_username: Mapped[str] = mapped_column(String, nullable=False)
+    action: Mapped[str] = mapped_column(String, nullable=False)  # update_user, delete_user, grant_admin, revoke_admin, etc.
+    target_user_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON с деталями изменений
+    ip_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
 

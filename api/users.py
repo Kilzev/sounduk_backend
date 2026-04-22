@@ -43,7 +43,6 @@ async def update_me(
 
     if user_update.password:
         current_user.hashed_password = hash_password(user_update.password)
-        current_user.plain_password = user_update.password
 
     db.commit()
     db.refresh(current_user)

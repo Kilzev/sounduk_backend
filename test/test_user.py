@@ -1,40 +1,21 @@
 from fastapi.testclient import TestClient
 import pytest
+from conftest import register_and_login
+
 
 def test_delete_user(client):
-    # Register and delete
-    reg = client.post(
-        "/api/auth/register",
-        json={"username": "delete_me", "password": "password123"}
-    )
-    # Login
-    login = client.post(
-        "/api/auth/login",
-        json={"username": "delete_me", "password": "password123"}
-    )
-    token = login.json()["access_token"]
-    
-    # Delete
+    token = register_and_login(client, "delete_me")
+
     response = client.delete(
         "/api/users/me",
         headers={"Authorization": f"Bearer {token}"}
     )
     assert response.status_code == 204
 
+
 def test_update_user(client):
-    # Register
-    reg = client.post(
-        "/api/auth/register",
-        json={"username": "update_me", "password": "password123"}
-    )
-    # Login
-    login = client.post(
-        "/api/auth/login",
-        json={"username": "update_me", "password": "password123"}
-    )
-    token = login.json()["access_token"]
-    
-    # Update username
+    token = register_and_login(client, "update_me")
+
     response = client.patch(
         "/api/users/me",
         json={"username": "updated_user"},
@@ -43,20 +24,10 @@ def test_update_user(client):
     assert response.status_code == 200
     assert response.json()["username"] == "updated_user"
 
+
 def test_storage_usage(client):
-    # Register
-    reg = client.post(
-        "/api/auth/register",
-        json={"username": "storage_user", "password": "password123"}
-    )
-    # Login
-    login = client.post(
-        "/api/auth/login",
-        json={"username": "storage_user", "password": "password123"}
-    )
-    token = login.json()["access_token"]
-    
-    # Get storage usage (initially 0)
+    token = register_and_login(client, "storage_user")
+
     response = client.get(
         "/api/users/storage/usage",
         headers={"Authorization": f"Bearer {token}"}
@@ -67,16 +38,9 @@ def test_storage_usage(client):
     assert data["percentage"] == 0.0
     assert data["storage_limit"] > 0
 
+
 def test_storage_stats_contract(client):
-    client.post(
-        "/api/auth/register",
-        json={"username": "storage_contract_user", "password": "password123"}
-    )
-    login = client.post(
-        "/api/auth/login",
-        json={"username": "storage_contract_user", "password": "password123"}
-    )
-    token = login.json()["access_token"]
+    token = register_and_login(client, "storage_contract_user")
 
     response = client.get(
         "/api/users/storage",

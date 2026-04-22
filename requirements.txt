@@ -11,3 +11,5 @@ yookassa
 httpx
 pytest
 mutagen
+python-dotenv
+boto3

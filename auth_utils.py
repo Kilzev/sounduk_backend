@@ -1,4 +1,4 @@
-# auth_utils.py - Утилиты для авторизации (Argon2)
+# auth_utils.py - Утилиты для ав��оризации (Argon2)
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
@@ -8,8 +8,12 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 from typing import Optional
+import os
+from dotenv import load_dotenv
 
-SECRET_KEY = "your-secret-key-change-in-production"
+load_dotenv()
+
+SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 60
 
@@ -64,15 +68,23 @@ async def get_current_user(
         )
 
     payload = decode_token(token_str)
-    
-    username: Optional[str] = payload.get("sub")
-    if username is None:
+
+    sub = payload.get("sub")
+    if sub is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Неверный токен"
         )
-    
-    user = db.query(models.User).filter(models.User.username == username).first()
+
+    try:
+        user_id = int(sub)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Неверный токен"
+        )
+
+    user = db.query(models.User).filter(models.User.id == user_id).first()
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -93,6 +105,17 @@ async def get_current_user(
             db.commit()
     
     return user
+
+async def get_verified_user(
+    current_user: models.User = Depends(get_current_user)
+) -> models.User:
+    """Требует подтверждённый email для доступа"""
+    if not current_user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Подтвердите email для доступа к этой функции"
+        )
+    return current_user
 
 async def get_current_admin_user(
     current_user: models.User = Depends(get_current_user)
