@@ -81,7 +81,7 @@ if [ "$restart_choice" = "y" ]; then
     ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
         "pkill -f '/var/www/sounduk_backend/venv/bin/uvicorn main:app' || true && sleep 2 && cd $REMOTE_PATH && \
         source venv/bin/activate && \
-        nohup uvicorn main:app --host 127.0.0.1 --port 8000 --workers 4 >> server.log 2>&1 &"
+        nohup uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2 >> server.log 2>&1 &"
     sleep 3
     echo -e "${GREEN}✅ Сервис перезагружен${NC}"
 fi

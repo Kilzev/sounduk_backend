@@ -26,6 +26,7 @@ class User(Base):
     premium_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     storage_limit: Mapped[int] = mapped_column(BigInteger, default=1073741824) # 1 GB default
     is_restricted: Mapped[bool] = mapped_column(Boolean, default=False)
+    library_revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     tracks: Mapped[List["Track"]] = relationship("Track", back_populates="owner", cascade="all, delete-orphan")
     payments: Mapped[List["Payment"]] = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
@@ -75,6 +76,7 @@ class Album(Base):
     title: Mapped[str] = mapped_column(String, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     cover_art: Mapped[Optional[bytes]] = mapped_column(LargeBinary, nullable=True)
+    cover_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     track_ids: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)

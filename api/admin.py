@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional
 from pathlib import Path
 from s3_utils import get_s3_client, S3_BUCKET_NAME
+from library_sync import bump_library_revision
 
 router = APIRouter()
 
@@ -152,6 +153,7 @@ def _cleanup_user_tracks_data(
         if not dry_run:
             db_deleted = db.query(models.Track).filter(models.Track.user_id == user_id).delete()
             db.commit()
+            bump_library_revision(db, user_id)
         else:
             db_deleted = len(track_ids)
 

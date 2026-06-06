@@ -27,6 +27,24 @@ def migrate_add_album_cover_art(cursor):
     print("[albums] cover_art добавлена")
 
 
+def migrate_add_album_cover_path(cursor):
+    """Добавляет cover_path (S3 key) для обложек альбомов."""
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='albums'")
+    if not cursor.fetchone():
+        print("[albums] Таблица не существует — пропуск cover_path")
+        return
+
+    cursor.execute("PRAGMA table_info(albums)")
+    column_names = [col[1] for col in cursor.fetchall()]
+    if "cover_path" in column_names:
+        print("[albums] Колонка cover_path уже есть — пропуск")
+        return
+
+    print("[albums] Добавление колонки cover_path...")
+    cursor.execute("ALTER TABLE albums ADD COLUMN cover_path TEXT")
+    print("[albums] cover_path добавлена")
+
+
 def migrate_albums(cursor):
     """Миграция albums: PK (id) -> PK (id, user_id)"""
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='albums'")
@@ -235,6 +253,26 @@ def migrate_create_registration_limits(cursor):
     print("[registration_limits] Готово")
 
 
+def migrate_add_library_revision(cursor):
+    """Добавляет library_revision для incremental sync клиентов."""
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
+    if not cursor.fetchone():
+        print("[users] Таблица не существует — пропуск library_revision")
+        return
+
+    cursor.execute("PRAGMA table_info(users)")
+    column_names = [col[1] for col in cursor.fetchall()]
+    if "library_revision" in column_names:
+        print("[users] Колонка library_revision уже есть — пропуск")
+        return
+
+    print("[users] Добавление колонки library_revision...")
+    cursor.execute(
+        "ALTER TABLE users ADD COLUMN library_revision INTEGER NOT NULL DEFAULT 1"
+    )
+    print("[users] library_revision добавлена")
+
+
 def migrate():
     if not os.path.exists(DB_PATH):
         print("database.db не найден — миграция не нужна, таблицы будут созданы при старте")
@@ -245,12 +283,14 @@ def migrate():
 
     try:
         migrate_add_album_cover_art(cursor)
+        migrate_add_album_cover_path(cursor)
         migrate_albums(cursor)
         migrate_remove_plain_password(cursor)
         migrate_add_email_verification(cursor)
         migrate_create_registration_limits(cursor)
         migrate_remove_recovery_code(cursor)
         migrate_create_admin_audit_log(cursor)
+        migrate_add_library_revision(cursor)
         conn.commit()
         print("\nВсе миграции выполнены успешно!")
     except Exception as e:

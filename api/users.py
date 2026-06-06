@@ -8,6 +8,17 @@ from typing import Optional
 
 router = APIRouter()
 
+@router.get("/library-revision", response_model=schemas.LibraryRevisionResponse)
+async def get_library_revision(
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    revision = current_user.library_revision or 1
+    # Refresh from DB in case the session object is stale.
+    db.refresh(current_user)
+    return {"revision": current_user.library_revision or revision}
+
+
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_me(
     current_user: models.User = Depends(get_current_user),

@@ -1,4 +1,5 @@
 # db_backup.py - Бэкап и восстановление БД через S3
+import fcntl
 import os
 import shutil
 import threading
@@ -11,11 +12,46 @@ from s3_utils import get_s3_client, S3_BUCKET_NAME
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "database.db")
 S3_DB_LATEST_KEY = "backups/database_latest.db"
+STARTUP_LOCK_PATH = os.path.join(BASE_DIR, ".startup.lock")
 
 BACKUP_INTERVAL_SECONDS = 60 * 30  # каждые 30 минут
 
 _backup_thread = None
 _stop_event = threading.Event()
+
+
+class _StartupLock:
+    """Один startup на хост (uvicorn --workers N иначе блокирует SQLite/S3)."""
+
+    def __init__(self) -> None:
+        self._handle = None
+        self.acquired = False
+
+    def __enter__(self) -> "_StartupLock":
+        self._handle = open(STARTUP_LOCK_PATH, "w")
+        try:
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.acquired = True
+        except BlockingIOError:
+            self.acquired = False
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._handle is not None:
+            if self.acquired:
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+            self._handle.close()
+
+
+def run_startup_once() -> bool:
+    """S3 restore + periodic backup — только в одном uvicorn worker."""
+    with _StartupLock() as lock:
+        if not lock.acquired:
+            print("[db_backup] ⏭ startup уже выполнен другим worker")
+            return False
+        download_db_from_s3()
+        start_periodic_backup()
+        return True
 
 
 def upload_db_to_s3():

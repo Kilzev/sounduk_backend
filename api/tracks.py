@@ -1,8 +1,8 @@
 # api/tracks.py - Роуты для работы с треками
 import email
 from urllib.parse import quote, unquote
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Request, Header, BackgroundTasks
-from fastapi.responses import StreamingResponse, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, Request, Header, BackgroundTasks
+from fastapi.responses import StreamingResponse, Response, JSONResponse
 import pydantic
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -28,6 +28,13 @@ from mutagen.id3 import ID3, APIC
 from mutagen.flac import FLAC
 from mutagen import File as MutagenFile
 from dotenv import load_dotenv
+from library_sync import bump_library_revision, current_library_revision
+from cover_storage import (
+    delete_cover_from_s3,
+    download_cover_by_url,
+    resolve_cover_image,
+    upload_track_cover_to_s3,
+)
 from s3_utils import get_s3_client, S3_BUCKET_NAME
 from youtube_converter import download_youtube_mp3_with_meta, expand_playlist_watch_urls_sync
 
@@ -688,10 +695,12 @@ async def _build_youtube_media_item(
         media["download_url"] = await _fetch_youtube_mp3_download_url(watch_url)
     else:
         try:
-            audio_bytes, yt_title, yt_duration, yt_artist = await download_youtube_mp3_with_meta(watch_url)
+            audio_bytes, yt_title, yt_duration, yt_artist, yt_thumbnail = await download_youtube_mp3_with_meta(watch_url)
             media["audio_bytes"] = audio_bytes
             if yt_duration > 0:
                 media["duration"] = yt_duration
+            if yt_thumbnail:
+                media["thumbnail_url"] = yt_thumbnail
         except HTTPException:
             if _rapidapi_configured():
                 media["download_url"] = await _fetch_youtube_mp3_download_url(watch_url)
@@ -947,40 +956,36 @@ def _extract_audio_metadata(raw_bytes: bytes, source_name: str) -> dict[str, Any
 
 
 def _upload_cover_to_s3(cover_data: bytes, user_id: int, track_id: str) -> str:
-    cover_key = f"covers/{user_id}/{track_id}.jpg"
-    s3_client = get_s3_client()
-    s3_client.upload_fileobj(
-        BytesIO(cover_data),
-        S3_BUCKET_NAME,
-        cover_key,
-        ExtraArgs={"ContentType": "image/jpeg"},
-    )
-    return cover_key
+    return upload_track_cover_to_s3(cover_data, user_id, track_id)
+
+
+async def _persist_track_cover(
+    *,
+    user_id: int,
+    track_id: str,
+    cover_data: bytes | None = None,
+    cover_url: str | None = None,
+) -> str | None:
+    """Скачивает обложку (если URL) и сохраняет в S3. Возвращает cover_path."""
+    data = cover_data
+    if data is None and cover_url:
+        try:
+            data = await download_cover_by_url(cover_url.strip())
+        except HTTPException:
+            return None
+        except Exception:
+            return None
+    if not data:
+        return None
+    try:
+        return upload_track_cover_to_s3(data, user_id, track_id)
+    except Exception as exc:
+        print(f"Cover upload error: {exc}")
+        return None
 
 
 async def _download_cover_by_url(cover_url: str) -> bytes:
-    parsed = httpx.URL(cover_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.host:
-        raise HTTPException(status_code=400, detail="Некорректный URL обложки")
-
-    headers = {
-        "Accept": "application/json,image/*,*/*",
-        "User-Agent": "sounduk-backend/1.0",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            response = await client.get(cover_url, headers=headers)
-            response.raise_for_status()
-            content_type = (response.headers.get("content-type") or "").lower()
-            if "image" not in content_type:
-                raise HTTPException(status_code=400, detail="URL не указывает на изображение")
-            if len(response.content) > 5 * 1024 * 1024:
-                raise HTTPException(status_code=400, detail="Обложка слишком большая (макс 5MB)")
-            return response.content
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Не удалось скачать обложку: {exc}") from exc
+    return await resolve_cover_image(cover_url)
 
 
 def _guess_title_artist_from_filename(file_name: str) -> tuple[str, str]:
@@ -1033,6 +1038,7 @@ def _attach_tracks_to_album(
         album.track_ids = list(existing)
         album.updated_at = datetime.utcnow()
         db.commit()
+        bump_library_revision(db, current_user.id)
 
 
 async def _create_track_from_remote(
@@ -1076,6 +1082,13 @@ async def _create_track_from_remote(
     s3_key = _build_s3_track_key(current_user.id, track_id)
     _upload_bytes_to_s3(raw_bytes, s3_key)
 
+    cover_path = await _persist_track_cover(
+        user_id=current_user.id,
+        track_id=track_id,
+        cover_data=parsed_meta.get("cover_data"),
+        cover_url=item.get("thumbnail_url") or item.get("cover_url"),
+    )
+
     new_track = models.Track(
         id=track_id,
         user_id=current_user.id,
@@ -1085,12 +1098,13 @@ async def _create_track_from_remote(
         duration=duration,
         file_path=s3_key,
         file_size=file_size,
-        cover_path=None,
+        cover_path=cover_path,
         created_at=datetime.utcnow(),
     )
     db.add(new_track)
     db.commit()
     db.refresh(new_track)
+    bump_library_revision(db, current_user.id)
     return new_track
 
 
@@ -1133,10 +1147,11 @@ async def _create_track_from_direct_url(
     _upload_bytes_to_s3(raw_bytes, s3_key, content_type=content_type)
     cover_path = None
     if parsed_meta.get("cover_data"):
-        try:
-            cover_path = _upload_cover_to_s3(parsed_meta["cover_data"], current_user.id, track_id)
-        except Exception as exc:
-            print(f"Cover upload error: {exc}")
+        cover_path = await _persist_track_cover(
+            user_id=current_user.id,
+            track_id=track_id,
+            cover_data=parsed_meta["cover_data"],
+        )
 
     guessed_title, guessed_artist = _guess_title_artist_from_filename(source_name)
     parsed_title = _sanitize_meta_value(parsed_meta.get("title"))
@@ -1182,6 +1197,7 @@ async def _create_track_from_direct_url(
     db.add(new_track)
     db.commit()
     db.refresh(new_track)
+    bump_library_revision(db, current_user.id)
     return new_track
 
 @router.post("/upload", response_model=schemas.TrackResponse, status_code=status.HTTP_201_CREATED)
@@ -1277,6 +1293,7 @@ async def upload_track(
         db.add(new_track)
         db.commit()
         db.refresh(new_track)
+        bump_library_revision(db, current_user.id)
         
         return new_track
         
@@ -1321,11 +1338,26 @@ async def get_track_cover(
         headers={"Cache-Control": "public, max-age=86400"}
     )
 
-@router.get("", response_model=schemas.TracksList)
+@router.get("")
 async def get_tracks(
+    since_revision: int | None = Query(None, alias="since_revision"),
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
+    revision = current_library_revision(db, current_user.id)
+    headers = {"X-Library-Revision": str(revision)}
+
+    if since_revision is not None and since_revision == revision:
+        return JSONResponse(
+            content={
+                "unchanged": True,
+                "revision": revision,
+                "tracks": [],
+                "total": 0,
+            },
+            headers=headers,
+        )
+
     tracks = db.query(models.Track).filter(
         models.Track.user_id == current_user.id
     ).order_by(models.Track.created_at.asc()).all()
@@ -1334,30 +1366,22 @@ async def get_tracks(
     result_tracks = []
     
     for t in tracks:
-        # Устанавливаем статус по умолчанию (модель SQLAlchemy)
-        t_dict = t.__dict__.copy()
-        
-        # Если без премиума общая сумма текущего и всех предыдущих файлов больше 1 ГБ,
-        # то этот трек заморожен. (Хотя мы используем current_user.storage_limit 
-        # который уже откатился к 1ГБ, если премиум истек).
         current_storage += t.file_size
-        
-        # Трек считается замороженным, если его добавление превысило текущий лимит пользователя.
-        is_frozen = False
-        if current_storage > current_user.storage_limit:
-            is_frozen = True
-            
-        t_dict["is_frozen"] = is_frozen
-        # Для корректной выдачи в Pydantic убираем служебные поля SQLAlchemy
-        if "_sa_instance_state" in t_dict:
-            del t_dict["_sa_instance_state"]
-            
-        result_tracks.append(t_dict)
+        is_frozen = current_storage > current_user.storage_limit
+        track_out = schemas.TrackResponse.model_validate(t)
+        track_dict = track_out.model_dump(mode="json")
+        track_dict["is_frozen"] = is_frozen
+        result_tracks.append(track_dict)
     
-    return {
+    body = {
         "tracks": result_tracks,
-        "total": len(result_tracks)
+        "total": len(result_tracks),
     }
+    if since_revision is not None:
+        body["unchanged"] = False
+        body["revision"] = revision
+
+    return JSONResponse(content=body, headers=headers)
 
 @router.get("/{track_id}/stream")
 async def stream_track(
@@ -1572,13 +1596,16 @@ async def update_track(
         track.artist = artist
 
     if payload.clear_cover:
+        delete_cover_from_s3(track.cover_path)
         track.cover_path = None
     elif payload.cover_url:
         cover_bytes = await _download_cover_by_url(payload.cover_url.strip())
+        delete_cover_from_s3(track.cover_path)
         track.cover_path = _upload_cover_to_s3(cover_bytes, current_user.id, track.id)
 
     db.commit()
     db.refresh(track)
+    bump_library_revision(db, current_user.id)
     return track
 
 
@@ -1615,8 +1642,17 @@ async def repair_track_metadata(
         track.title = _sanitize_meta_value(parsed.get("title"))
     if _sanitize_meta_value(parsed.get("artist")):
         track.artist = _sanitize_meta_value(parsed.get("artist"))
+    if not track.cover_path and parsed.get("cover_data"):
+        cover_path = await _persist_track_cover(
+            user_id=current_user.id,
+            track_id=track.id,
+            cover_data=parsed["cover_data"],
+        )
+        if cover_path:
+            track.cover_path = cover_path
     db.commit()
     db.refresh(track)
+    bump_library_revision(db, current_user.id)
     return track
 
 
@@ -1968,5 +2004,6 @@ async def delete_track(
 
     db.delete(track)
     db.commit()
+    bump_library_revision(db, track.user_id)
     
     return None

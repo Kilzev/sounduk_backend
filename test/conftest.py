@@ -73,6 +73,39 @@ def register_and_login(client, username, password="password123", verify=True):
 
 
 @pytest.fixture(scope="module", autouse=True)
+def mock_s3_covers():
+    """In-memory S3 для обложек альбомов/треков в тестах."""
+    store: dict[str, bytes] = {}
+
+    def _upload_album(data: bytes, user_id: int, album_id: str) -> str:
+        key = f"album_covers/{user_id}/{album_id}.jpg"
+        store[key] = data
+        return key
+
+    def _upload_track(data: bytes, user_id: int, track_id: str) -> str:
+        key = f"covers/{user_id}/{track_id}.jpg"
+        store[key] = data
+        return key
+
+    def _read(key: str) -> bytes:
+        if key not in store:
+            raise FileNotFoundError(key)
+        return store[key]
+
+    def _delete(key: str | None) -> None:
+        if key:
+            store.pop(str(key), None)
+
+    with patch("cover_storage.upload_album_cover_to_s3", side_effect=_upload_album), \
+         patch("cover_storage.upload_track_cover_to_s3", side_effect=_upload_track), \
+         patch("cover_storage.read_cover_from_s3", side_effect=_read), \
+         patch("cover_storage.delete_cover_from_s3", side_effect=_delete), \
+         patch("api.tracks.upload_track_cover_to_s3", side_effect=_upload_track), \
+         patch("api.tracks.delete_cover_from_s3", side_effect=_delete):
+        yield store
+
+
+@pytest.fixture(scope="module", autouse=True)
 def mock_upload_dir(tmp_path_factory):
     """Используем временную папку для загрузок"""
     temp_dir = tmp_path_factory.mktemp("test_uploads")

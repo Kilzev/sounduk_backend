@@ -150,6 +150,34 @@ def test_update_album_partial_keeps_other_fields(client):
     assert data["trackIds"] == ["t1", "t2", "t3"]
 
 
+def test_update_album_cover_url(client, monkeypatch):
+    token = register_and_login(client, "album_cover_url")
+    album_id = _gen_id("curl")
+    client.post(
+        "/api/albums",
+        json={"id": album_id, "title": "T", "trackIds": []},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+    expected_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+    async def fake_download(_url: str) -> bytes:
+        return png_bytes
+
+    import api.albums as albums_api
+
+    monkeypatch.setattr(albums_api, "download_cover_by_url", fake_download)
+
+    r = client.put(
+        f"/api/albums/{album_id}",
+        json={"cover_url": "https://example.com/cover.png"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["coverArt"] == expected_b64
+
+
 def test_update_album_clear_cover(client):
     token = register_and_login(client, "album_clear_cover")
     album_id = _gen_id("clr")

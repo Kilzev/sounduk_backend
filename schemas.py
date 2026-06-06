@@ -153,6 +153,12 @@ class TrackResponse(BaseModel):
 class TracksList(BaseModel):
     tracks: list[TrackResponse]
     total: int
+    unchanged: bool = False
+    revision: Optional[int] = None
+
+
+class LibraryRevisionResponse(BaseModel):
+    revision: int
 class PaymentStatusResponse(BaseModel):
     status: str
 

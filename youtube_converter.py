@@ -64,7 +64,7 @@ def _resolve_mp3_output_path(base: Path) -> Path:
     )
 
 
-def _download_mp3_sync(watch_url: str) -> tuple[Path, str | None, int]:
+def _download_mp3_sync(watch_url: str) -> tuple[Path, str | None, int, str | None, str | None]:
     base = TMP_DIR / uuid.uuid4().hex
     ydl_opts = _build_ydl_opts(base)
     info: dict | None = None
@@ -99,7 +99,22 @@ def _download_mp3_sync(watch_url: str) -> tuple[Path, str | None, int]:
         except (TypeError, ValueError):
             duration = 0
 
-    return _resolve_mp3_output_path(base), title, duration, artist
+    thumbnail_url = _pick_thumbnail_url(info) if isinstance(info, dict) else None
+    return _resolve_mp3_output_path(base), title, duration, artist, thumbnail_url
+
+
+def _pick_thumbnail_url(info: dict) -> str | None:
+    thumbnails = info.get("thumbnails")
+    if isinstance(thumbnails, list):
+        for entry in reversed(thumbnails):
+            if isinstance(entry, dict):
+                url = entry.get("url")
+                if isinstance(url, str) and url.strip():
+                    return url.strip()
+    thumb = info.get("thumbnail")
+    if isinstance(thumb, str) and thumb.strip():
+        return thumb.strip()
+    return None
 
 
 def _cleanup_path(path: Path) -> None:
@@ -115,16 +130,18 @@ def _cleanup_path(path: Path) -> None:
 
 async def download_youtube_mp3_with_meta(
     watch_url: str,
-) -> tuple[bytes, str | None, int, str | None]:
-    path, title, duration, artist = await asyncio.to_thread(_download_mp3_sync, watch_url)
+) -> tuple[bytes, str | None, int, str | None, str | None]:
+    path, title, duration, artist, thumbnail_url = await asyncio.to_thread(
+        _download_mp3_sync, watch_url
+    )
     try:
-        return path.read_bytes(), title, duration, artist
+        return path.read_bytes(), title, duration, artist, thumbnail_url
     finally:
         _cleanup_path(path)
 
 
 async def download_youtube_mp3_bytes(watch_url: str) -> bytes:
-    audio_bytes, _, _, _ = await download_youtube_mp3_with_meta(watch_url)
+    audio_bytes, _, _, _, _ = await download_youtube_mp3_with_meta(watch_url)
     return audio_bytes
 
 
