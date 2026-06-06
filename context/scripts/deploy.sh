@@ -11,9 +11,10 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 SSH_HOST="root@185.76.242.73"
-SSH_PASS="d1k2u3c4SS"
+SSH_KEY="${HOME}/.ssh/sounduk_cursor"
 REMOTE_PATH="/var/www/sounduk_backend"
-LOCAL_PATH="/Users/ilya/Develope/sounduk_backend"
+LOCAL_PATH="/Users/ilya/Develope/mega_sounduk/sounduk_backend"
+SSH_OPTS=(-i "$SSH_KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no)
 
 echo -e "${BLUE}🚀 Sounduk API - Deployment${NC}"
 echo "================================"
@@ -58,14 +59,14 @@ fi
 
 # Создание бэкапа на сервере
 echo -e "\n${BLUE}📦 Создание бэкапа на сервере...${NC}"
-sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_HOST" \
+ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
     "cd $REMOTE_PATH && for f in $FILES_TO_DEPLOY; do [ -f \$f ] && cp -v \$f \$f.backup.$(date +%s); done"
 
 # Копирование файлов на сервер
 echo -e "\n${BLUE}📤 Копирование файлов на сервер...${NC}"
 for file in $FILES_TO_DEPLOY; do
     if [ -f "$LOCAL_PATH/$file" ]; then
-        sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
+        scp "${SSH_OPTS[@]}" \
             "$LOCAL_PATH/$file" "$SSH_HOST:$REMOTE_PATH/$file"
         echo -e "${GREEN}✅ $file${NC}"
     fi
@@ -77,19 +78,19 @@ read -p "Выбор: " restart_choice
 
 if [ "$restart_choice" = "y" ]; then
     echo -e "\n${BLUE}🔄 Перезагрузка uvicorn...${NC}"
-    sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_HOST" \
-        "pkill -f 'uvicorn main:app' || true && sleep 2 && cd $REMOTE_PATH && \
+    ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
+        "pkill -f '/var/www/sounduk_backend/venv/bin/uvicorn main:app' || true && sleep 2 && cd $REMOTE_PATH && \
         source venv/bin/activate && \
-        nohup uvicorn main:app --host 127.0.0.1 --port 8000 --workers 4 > server.log 2>&1 &"
+        nohup uvicorn main:app --host 127.0.0.1 --port 8000 --workers 4 >> server.log 2>&1 &"
     sleep 3
     echo -e "${GREEN}✅ Сервис перезагружен${NC}"
 fi
 
 # Проверка статуса
 echo -e "\n${BLUE}📊 Статус сервиса:${NC}"
-sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no "$SSH_HOST" \
-    "ps aux | grep -E 'uvicorn|sounduk' | grep -v grep | tail -3"
+ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
+    "ps aux | grep -E 'sounduk_backend.*uvicorn' | grep -v grep | tail -3"
 
 echo -e "\n${GREEN}✅ Развертывание завершено!${NC}"
-echo -e "🔗 API доступен по адресу: http://185.76.242.73/api (через nginx)"
-echo -e "📊 Swagger docs: http://185.76.242.73/docs"
+echo -e "🔗 API: https://api.sounduk.ru"
+echo -e "📊 Swagger: https://api.sounduk.ru/docs"

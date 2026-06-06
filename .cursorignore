@@ -1,0 +1,23 @@
+# Exclude FastAPI/Python files
+!*.py
+
+# Exclude environment secrets
+!.env
+!*.env.*
+
+# Exclude project folders
+!test/
+!context/
+
+# Exclude files
+!*.md
+!*.txt
+!*.json
+!*.yaml
+!*.yml
+!*.ini
+!*.conf
+!*.log
+!*.err
+!*.pid
+!*.lock

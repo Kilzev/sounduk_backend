@@ -9,6 +9,8 @@ import os
 import json
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
+from s3_utils import get_s3_client, S3_BUCKET_NAME
 
 router = APIRouter()
 
@@ -49,6 +51,122 @@ def _count_active_admins(db: Session) -> int:
     ).count()
 
 
+def _normalize_possible_s3_key(path_value: Optional[str]) -> Optional[str]:
+    if not path_value:
+        return None
+    if path_value.startswith("/"):
+        return None
+    if "://" in path_value:
+        parts = path_value.split("/", 3)
+        if len(parts) < 4:
+            return None
+        return parts[3]
+    return path_value
+
+
+def _collect_user_s3_keys(user_id: int, tracks: list[models.Track]) -> set[str]:
+    keys: set[str] = set()
+    for track in tracks:
+        for value in (track.file_path, track.cover_path):
+            key = _normalize_possible_s3_key(value)
+            if key:
+                keys.add(key)
+    # Common user-scoped prefixes (legacy/new layouts).
+    prefixes = (
+        f"{user_id}/",
+        f"uploads/{user_id}/",
+        f"user_{user_id}/",
+    )
+    try:
+        s3 = get_s3_client()
+        paginator = s3.get_paginator("list_objects_v2")
+        for prefix in prefixes:
+            for page in paginator.paginate(Bucket=S3_BUCKET_NAME, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    key = obj.get("Key")
+                    if key:
+                        keys.add(key)
+    except Exception:
+        # Prefix scan is best-effort only; explicit keys from DB are still used.
+        pass
+    return keys
+
+
+def _delete_s3_keys(keys: list[str]) -> int:
+    if not keys:
+        return 0
+    s3 = get_s3_client()
+    deleted = 0
+    for i in range(0, len(keys), 1000):
+        chunk = keys[i : i + 1000]
+        s3.delete_objects(
+            Bucket=S3_BUCKET_NAME,
+            Delete={"Objects": [{"Key": k} for k in chunk]},
+        )
+        deleted += len(chunk)
+    return deleted
+
+
+def _cleanup_user_tracks_data(
+    user_id: int,
+    db: Session,
+    delete_db_records: bool,
+    dry_run: bool,
+) -> schemas.AdminUserTracksCleanupResponse:
+    tracks = db.query(models.Track).filter(models.Track.user_id == user_id).all()
+    track_ids = {t.id for t in tracks}
+    errors: list[str] = []
+
+    local_deleted = 0
+    local_missing = 0
+    for t in tracks:
+        for value in (t.file_path, t.cover_path):
+            if not value:
+                continue
+            path = Path(value)
+            if not path.is_absolute():
+                continue
+            if path.exists():
+                if not dry_run:
+                    try:
+                        path.unlink()
+                    except Exception as e:
+                        errors.append(f"local_delete_failed:{path}:{e}")
+                        continue
+                local_deleted += 1
+            else:
+                local_missing += 1
+
+    s3_deleted = 0
+    try:
+        s3_keys = sorted(_collect_user_s3_keys(user_id, tracks))
+        if not dry_run and s3_keys:
+            s3_deleted = _delete_s3_keys(s3_keys)
+        elif dry_run:
+            s3_deleted = len(s3_keys)
+    except Exception as e:
+        errors.append(f"s3_cleanup_failed:{e}")
+
+    db_deleted = 0
+    if delete_db_records and track_ids:
+        if not dry_run:
+            db_deleted = db.query(models.Track).filter(models.Track.user_id == user_id).delete()
+            db.commit()
+        else:
+            db_deleted = len(track_ids)
+
+    return schemas.AdminUserTracksCleanupResponse(
+        user_id=user_id,
+        tracks_in_db=len(track_ids),
+        local_files_deleted=local_deleted,
+        local_files_missing=local_missing,
+        s3_objects_deleted=s3_deleted,
+        db_tracks_deleted=db_deleted,
+        dry_run=dry_run,
+        errors=errors,
+    )
+
+
 @router.get("/users", response_model=list[schemas.AdminUserResponse])
 async def list_users(
     skip: int = 0,
@@ -84,6 +202,35 @@ async def list_user_tracks(
 
     tracks = db.query(models.Track).filter(models.Track.user_id == user_id).all()
     return {"tracks": tracks, "total": len(tracks)}
+
+
+@router.post(
+    "/users/{user_id}/tracks/cleanup",
+    response_model=schemas.AdminUserTracksCleanupResponse,
+)
+async def cleanup_user_tracks(
+    user_id: int,
+    payload: schemas.AdminUserTracksCleanupRequest,
+    db: Session = Depends(get_db),
+    current_admin: models.User = Depends(get_current_admin_user),
+):
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    expected = f"DELETE USER {user_id} TRACKS"
+    if payload.confirm.strip() != expected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Неверное подтверждение. Ожидается: '{expected}'",
+        )
+
+    return _cleanup_user_tracks_data(
+        user_id=user_id,
+        db=db,
+        delete_db_records=True,
+        dry_run=payload.dry_run,
+    )
 
 
 @router.patch("/users/{user_id}", response_model=schemas.AdminUserResponse)
@@ -207,7 +354,16 @@ async def delete_user(
         "was_admin": user.is_admin,
     }
 
-    # Удаляем файлы пользователя
+    # Удаляем треки пользователя (локальные файлы + S3 + записи tracks),
+    # затем удаляем самого пользователя.
+    _cleanup_user_tracks_data(
+        user_id=user_id,
+        db=db,
+        delete_db_records=True,
+        dry_run=False,
+    )
+
+    # Дополнительная страховка: удаляем директорию пользователя целиком.
     user_dir = f"uploads/{user_id}"
     if os.path.exists(user_dir):
         shutil.rmtree(user_dir)

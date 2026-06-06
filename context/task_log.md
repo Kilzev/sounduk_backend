@@ -1,10 +1,64 @@
 # Журнал задач и изменений API
 
-**Последнее обновление:** 2026-04-22
+**Последнее обновление:** 2026-06-04
 
 ---
 
 ## 📝 Статус текущих работ
+
+### ✅ ЗАВЕРШЕНО (2026-06-04): YouTube → MP3 через RapidAPI youtube-mp310
+
+- ✅ Клиент: `GET https://{YOUTUBE_MP3_HOST}{YOUTUBE_MP3_PATH}?url=<watch_url>` + заголовки RapidAPI
+- ✅ Env: `RAPIDAPI_KEY`, `YOUTUBE_MP3_HOST`, `YOUTUBE_MP3_PATH` (`.env.example`, `check_env.py`)
+- ✅ `load_dotenv()` в `main.py` / `api/tracks.py`
+- ✅ Эндпоинты: `/api/tracks/import/youtube/track|playlist|jobs`
+- ✅ Документация: `llm_client_app_info.md` §3.1.1
+- ✅ Прод: переменные YouTube добавлены в `/var/www/sounduk_backend/.env`
+- [ ] Перезапуск uvicorn на проде после выката `api/tracks.py` (если ещё не поднят)
+
+---
+
+### ✅ ЗАВЕРШЕНО (2026-06-04): Деплой на прод + SSH + инвентаризация сервера
+
+**Сервер:** `185.76.242.73` (`root`), прод API: `https://api.sounduk.ru`
+
+**Сделано:**
+
+- ✅ SSH-ключ `~/.ssh/sounduk_cursor` → `authorized_keys`, вход без пароля
+- ✅ Алиас `sounduk-prod` в `~/.ssh/config`
+- ✅ Найден единственный боевой backend: `/var/www/sounduk_backend` (порт 8000)
+- ✅ Очистка мусора на сервере и локально перед выкатом
+- ✅ `rsync` кода (api, models, migrate_albums, tests, context)
+- ✅ `migrate_albums.py` на проде — без новых изменений схемы
+- ✅ Перезапуск uvicorn, smoke `GET /docs` → 200
+- ✅ Обновлён `context/scripts/deploy.sh` (ключ, пути монорепо)
+- ✅ Запись в `context/change_log.md`
+
+**Удалено на сервере (дубликаты/мусор):**
+
+- ✅ `/var/www/panop.sounduk.ru_backup_`
+- ✅ `/etc/nginx/sites-enabled/sounduk_backend.bak.20260407174418`
+- ✅ `._*` и старые `*.backup.*` в `/var/www/sounduk_backend`
+
+**Не трогали (намеренно):**
+
+- `/opt/driver_test_backend` — `/driver-api/` на :8010
+- `/var/www/panop.sounduk.ru` — отдельный vhost `panop.sounduk.ru`
+
+**Осталось / TODO после деплоя:**
+
+- [ ] Убедиться на проде: `api/tracks.py` обновлён (после rsync проверить путь, не корень)
+- [ ] Smoke YouTube: `POST /api/tracks/import/youtube/track` с тестовым URL
+- [ ] Smoke: `PUT /api/albums/{id}` с `coverArt`, `GET /api/albums` на проде
+- [ ] Smoke на мобильном клиенте (обложки альбомов, кириллица)
+- [ ] `rsync`: исключить `database.db` и `uploads/` (см. change_log 2026-06-04)
+- [ ] Настроить `systemd` unit `sounduk.service` (сейчас только `nohup`)
+- [ ] Ротация root-пароля (был в git в `deploy.sh` / `ssh_info.md`)
+- [ ] Убрать пароли из репозитория (`deploy.sh` уже без пароля)
+
+**Детали:** `context/change_log.md` → раздел `2026-06-04`.
+
+---
 
 ### ✅ ЗАВЕРШЕНО: S3 синхронизация БД
 
@@ -87,6 +141,8 @@
 | **KI-004** | Rate limiting только на регистрацию (нет на платежи) | 🔴 Open | Low |
 | **KI-005** | Email-интеграция зависит от `.env` переменных | ⚠️ Review | Low |
 | **KI-006** | ~~БД на сервере, не синхронизируется с S3~~ | ✅ FIXED | High |
+| **KI-007** | API без systemd — перезапуск через `pkill`/`nohup`, риск 502 при деплое | 🔴 Open | High |
+| **KI-008** | `rsync` деплой может затронуть `database.db` / `uploads/` если не исключить | ⚠️ Review | High |
 
 **Решение KI-001 (CORS):**
 ```python
@@ -237,4 +293,4 @@ allow_origins=[
 
 ---
 
-**Последнее изменение:** 2026-04-22 by Claude Code
+**Последнее изменение:** 2026-06-04

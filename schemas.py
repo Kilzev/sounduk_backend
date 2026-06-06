@@ -108,11 +108,34 @@ class AdminAuditLogResponse(BaseModel):
     class Config:
         from_attributes = True
 
+
+class AdminUserTracksCleanupRequest(BaseModel):
+    confirm: str
+    dry_run: bool = False
+
+
+class AdminUserTracksCleanupResponse(BaseModel):
+    user_id: int
+    tracks_in_db: int
+    local_files_deleted: int
+    local_files_missing: int
+    s3_objects_deleted: int
+    db_tracks_deleted: int
+    dry_run: bool
+    errors: list[str] = []
+
 class TrackUpload(BaseModel):
     title: str
     artist: str
     album: Optional[str] = None
     duration: int
+
+
+class TrackUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    cover_url: Optional[str] = None
+    clear_cover: bool = False
 
 class TrackResponse(BaseModel):
     id: str
@@ -136,3 +159,105 @@ class PaymentStatusResponse(BaseModel):
 class PaymentCreateResponse(BaseModel):
     payment_id: str
     confirmation_url: Optional[str] = None
+
+
+class ImportedTrack(BaseModel):
+    id: str
+    title: str
+    artist: str
+    album: Optional[str] = None
+    file_size: int
+    s3_key: str
+
+
+class TrackImportResponse(BaseModel):
+    imported: list[ImportedTrack]
+    total: int
+
+
+class YouTubeImportRequest(BaseModel):
+    youtube_url: str
+    album_id: Optional[str] = None
+
+
+class YouTubeImportJobCreateRequest(BaseModel):
+    youtube_url: str
+    album_id: Optional[str] = None
+    client_request_id: Optional[str] = None
+
+
+class DirectTrackImportItem(BaseModel):
+    file_url: str
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    duration: Optional[int] = None
+
+
+class DirectTrackImportRequest(BaseModel):
+    file_url: str
+    album_id: Optional[str] = None
+
+
+class DirectBatchImportRequest(BaseModel):
+    tracks: list[DirectTrackImportItem]
+    album_id: Optional[str] = None
+
+
+class DirectImportJobCreateRequest(BaseModel):
+    tracks: list[DirectTrackImportItem]
+    album_id: Optional[str] = None
+    client_request_id: Optional[str] = None
+
+
+class ImportJobResponse(BaseModel):
+    id: str
+    status: str
+    album_id: Optional[str] = None
+    total_items: int
+    processed_items: int
+    running_items: int = 0
+    success_items: int
+    failed_items: int
+    skipped_items: int
+    error_message: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ImportJobItemResponse(BaseModel):
+    id: int
+    position: int
+    file_url: str
+    status: str
+    retry_count: int
+    error_message: Optional[str] = None
+    imported_track_id: Optional[str] = None
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    duration: Optional[int] = None
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ImportJobItemsListResponse(BaseModel):
+    items: list[ImportJobItemResponse]
+    total: int
+
+
+class ImportJobCreateResponse(BaseModel):
+    job_id: str
+    status: str
+
+
+class ImportJobRetryResponse(BaseModel):
+    job_id: str
+    status: str
+    queued_items: int

@@ -198,6 +198,39 @@ JWT (Bearer Token). **Логин по email** — username использует�
 *   `403`: "Подтвердите email для доступа к этой функции"
 *   `403`: "Аккаунт ограничен"
 
+### 3.1.1 Импорт с YouTube (yt-dlp + FFmpeg)
+
+Backend конвертирует ссылку YouTube в MP3 **на сервере** (без RapidAPI): `yt-dlp` + `FFmpeg`, как в [yt-audio-api](https://github.com/alperensumeroglu/yt-audio-api). На сервере должны быть установлены `ffmpeg` и пакет `yt-dlp`. Env: `YOUTUBE_AUDIO_PROVIDER=ytdlp` (по умолчанию).
+
+**Один трек** — `POST` `/api/tracks/import/youtube/track`
+
+```json
+{
+  "youtube_url": "https://www.youtube.com/watch?v=VIDEO_ID",
+  "album_id": "optional-album-id"
+}
+```
+
+**Плейлист (синхронно, до 100 видео)** — `POST` `/api/tracks/import/youtube/playlist`  
+Тело такое же. Для длинных плейлистов лучше jobs (ниже).
+
+**Плейлист (фон, 202 Accepted)** — `POST` `/api/tracks/import/youtube/jobs`
+
+```json
+{
+  "youtube_url": "https://www.youtube.com/playlist?list=PLAYLIST_ID",
+  "album_id": "optional-album-id",
+  "client_request_id": "optional-idempotency-key"
+}
+```
+
+Ответ: `{ "job_id": "...", "status": "pending" }`. Статус job — существующие эндпоинты import jobs.
+
+**Поддерживаемые URL:** `youtube.com/watch?v=`, `youtu.be/`, плейлист `?list=`.  
+**Ошибки:** `400` некорректный URL; `502` ошибка yt-dlp/FFmpeg или сеть; `403` лимит хранилища.
+
+Опционально `YOUTUBE_AUDIO_PROVIDER=rapidapi` + `RAPIDAPI_KEY` (если RapidAPI доступен с сервера).
+
 ### 3.2 Список треков
 **GET** `/api/tracks`
 

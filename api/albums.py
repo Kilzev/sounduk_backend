@@ -1,11 +1,13 @@
 # api/albums.py - CRUD роуты для работы с альбомами (per-album)
 import base64
 import binascii
+import json
+import logging
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from auth_utils import get_current_user
@@ -13,6 +15,7 @@ from database import get_db
 import models
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 TITLE_MAX_LEN = 200
 DESCRIPTION_MAX_LEN = 2000
@@ -20,6 +23,8 @@ COVER_ART_MAX_BYTES = 2 * 1024 * 1024  # 2 MB raw
 
 
 class AlbumCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     id: str = Field(..., min_length=1, max_length=100)
     title: str = Field(..., min_length=1, max_length=TITLE_MAX_LEN)
     description: Optional[str] = Field(None, max_length=DESCRIPTION_MAX_LEN)
@@ -30,6 +35,8 @@ class AlbumCreate(BaseModel):
 
 
 class AlbumUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     title: Optional[str] = Field(None, min_length=1, max_length=TITLE_MAX_LEN)
     description: Optional[str] = Field(None, max_length=DESCRIPTION_MAX_LEN)
     trackIds: Optional[list[str]] = None
@@ -71,18 +78,38 @@ def _encode_cover_art(cover_art_bytes: Optional[bytes]) -> Optional[str]:
     """Кодирует bytes в base64 строку для ответа"""
     if not cover_art_bytes:
         return None
+    if isinstance(cover_art_bytes, memoryview):
+        cover_art_bytes = cover_art_bytes.tobytes()
     return base64.b64encode(cover_art_bytes).decode("ascii")
 
 
+def _normalize_track_ids(raw: Any) -> list[str]:
+    """Приводит track_ids из БД/клиента к list[str] (защита от битого JSON)."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x) for x in raw]
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed]
+        except json.JSONDecodeError:
+            return []
+    return []
+
+
 def _to_out(album: models.Album) -> AlbumOut:
+    created_at = album.created_at.isoformat() if album.created_at else ""
+    updated_at = album.updated_at.isoformat() if album.updated_at else ""
     return AlbumOut(
         id=album.id,
         title=album.title,
         description=album.description,
-        trackIds=album.track_ids or [],
+        trackIds=_normalize_track_ids(album.track_ids),
         coverArt=_encode_cover_art(album.cover_art),
-        createdAt=album.created_at.isoformat(),
-        updatedAt=album.updated_at.isoformat(),
+        createdAt=created_at,
+        updatedAt=updated_at,
     )
 
 
@@ -128,13 +155,21 @@ async def create_album(
         title=album_in.title,
         description=album_in.description,
         cover_art=cover_bytes,
-        track_ids=album_in.trackIds,
+        track_ids=_normalize_track_ids(album_in.trackIds),
         created_at=now,
         updated_at=now,
     )
-    db.add(db_album)
-    db.commit()
-    db.refresh(db_album)
+    try:
+        db.add(db_album)
+        db.commit()
+        db.refresh(db_album)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("create_album failed for user_id=%s album_id=%s", current_user.id, album_in.id)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Не удалось создать альбом",
+        ) from exc
 
     return _to_out(db_album)
 
@@ -162,15 +197,27 @@ async def update_album(
     if "description" in data:
         album.description = data["description"]
     if "trackIds" in data:
-        album.track_ids = data["trackIds"]
+        album.track_ids = _normalize_track_ids(data["trackIds"])
     if "coverArt" in data:
         cover_bytes = _decode_cover_art(data["coverArt"])
         # Пустая строка = очистить обложку
         album.cover_art = None if cover_bytes == b"" else cover_bytes
 
     album.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(album)
+    try:
+        db.commit()
+        db.refresh(album)
+    except Exception as exc:
+        db.rollback()
+        logger.exception(
+            "update_album failed for user_id=%s album_id=%s",
+            current_user.id,
+            album_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Не удалось обновить альбом",
+        ) from exc
 
     return _to_out(album)
 

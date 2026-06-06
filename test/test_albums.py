@@ -271,6 +271,39 @@ def test_users_see_only_own_albums(client):
     assert "User A album" not in titles_b
 
 
+def test_update_album_flutter_like_payload(client):
+    """PUT с лишними полями (id, createdAt) и кириллицей — как шлёт Flutter."""
+    token = register_and_login(client, "album_flutter_put")
+    album_id = _gen_id("flutter")
+    png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 50
+    cover_b64 = base64.b64encode(png_bytes).decode("ascii")
+
+    client.post(
+        "/api/albums",
+        json={"id": album_id, "title": "Old", "trackIds": []},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    r = client.put(
+        f"/api/albums/{album_id}",
+        json={
+            "id": album_id,
+            "title": "Фанк",
+            "description": None,
+            "trackIds": ["track-1"],
+            "createdAt": "2026-01-01T00:00:00.000Z",
+            "updatedAt": "2026-06-04T10:00:00.000Z",
+            "coverArt": cover_b64,
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["title"] == "Фанк"
+    assert data["trackIds"] == ["track-1"]
+    assert data["coverArt"] == cover_b64
+
+
 def test_isLocal_field_ignored(client):
     """Сервер должен игнорировать isLocal в body"""
     token = register_and_login(client, "album_islocal")

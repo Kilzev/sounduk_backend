@@ -8,8 +8,13 @@ vars_to_check = [
     "S3_ACCESS_KEY_ID",
     "S3_SECRET_ACCESS_KEY",
     "S3_REGION_NAME",
-    "S3_BUCKET_NAME"
+    "S3_BUCKET_NAME",
+    "YOUTUBE_AUDIO_PROVIDER",
 ]
+
+provider = (os.getenv("YOUTUBE_AUDIO_PROVIDER") or "ytdlp").strip().lower()
+if provider == "rapidapi":
+    vars_to_check.extend(["RAPIDAPI_KEY", "YOUTUBE_MP3_HOST", "YOUTUBE_MP3_PATH"])
 
 print("Checking environment variables...")
 for var in vars_to_check:

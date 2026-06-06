@@ -9,6 +9,24 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "database.db")
 
 
+def migrate_add_album_cover_art(cursor):
+    """Добавляет cover_art, если таблица создана без этой колонки."""
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='albums'")
+    if not cursor.fetchone():
+        print("[albums] Таблица не существует — пропуск cover_art")
+        return
+
+    cursor.execute("PRAGMA table_info(albums)")
+    column_names = [col[1] for col in cursor.fetchall()]
+    if "cover_art" in column_names:
+        print("[albums] Колонка cover_art уже есть — пропуск")
+        return
+
+    print("[albums] Добавление колонки cover_art...")
+    cursor.execute("ALTER TABLE albums ADD COLUMN cover_art BLOB")
+    print("[albums] cover_art добавлена")
+
+
 def migrate_albums(cursor):
     """Миграция albums: PK (id) -> PK (id, user_id)"""
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='albums'")
@@ -226,6 +244,7 @@ def migrate():
     cursor = conn.cursor()
 
     try:
+        migrate_add_album_cover_art(cursor)
         migrate_albums(cursor)
         migrate_remove_plain_password(cursor)
         migrate_add_email_verification(cursor)

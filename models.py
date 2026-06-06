@@ -30,6 +30,7 @@ class User(Base):
     tracks: Mapped[List["Track"]] = relationship("Track", back_populates="owner", cascade="all, delete-orphan")
     payments: Mapped[List["Payment"]] = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
     albums: Mapped[List["Album"]] = relationship("Album", back_populates="owner", cascade="all, delete-orphan")
+    import_jobs: Mapped[List["ImportJob"]] = relationship("ImportJob", back_populates="owner", cascade="all, delete-orphan")
 
     @property
     def storage_used(self) -> int:
@@ -108,4 +109,49 @@ class AdminAuditLog(Base):
     details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON с деталями изменений
     ip_address: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class ImportJob(Base):
+    __tablename__ = "import_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    album_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)
+    total_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    processed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    success_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped_items: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    client_request_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    owner: Mapped["User"] = relationship("User", back_populates="import_jobs")
+    items: Mapped[List["ImportJobItem"]] = relationship("ImportJobItem", back_populates="job", cascade="all, delete-orphan")
+
+
+class ImportJobItem(Base):
+    __tablename__ = "import_job_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("import_jobs.id"), nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_url: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_url: Mapped[str] = mapped_column(Text, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="pending", index=True)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    imported_track_id: Mapped[Optional[str]] = mapped_column(String, nullable=True, index=True)
+    title: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    artist: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    album: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    duration: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
+
+    job: Mapped["ImportJob"] = relationship("ImportJob", back_populates="items")
 
