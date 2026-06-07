@@ -50,6 +50,7 @@ from s3_utils import (
     get_object_async,
     get_s3_client,
     presigned_url_async,
+    upload_bytes_to_s3_async,
 )
 from youtube_converter import download_youtube_mp3_with_meta, expand_playlist_watch_urls_sync
 
@@ -811,16 +812,6 @@ async def _download_binary(url: str) -> bytes:
         ) from exc
 
 
-def _upload_bytes_to_s3(file_bytes: bytes, object_key: str, content_type: str = "audio/mpeg") -> None:
-    s3_client = get_s3_client()
-    s3_client.upload_fileobj(
-        BytesIO(file_bytes),
-        S3_BUCKET_NAME,
-        object_key,
-        ExtraArgs={"ContentType": content_type},
-    )
-
-
 def _build_s3_track_key(user_id: int, track_id: str) -> str:
     return f"tracks/{user_id}/{track_id}.mp3"
 
@@ -1152,7 +1143,7 @@ async def _create_track_from_remote(
 
     track_id = str(uuid.uuid4())
     s3_key = _build_s3_track_key(current_user.id, track_id)
-    _upload_bytes_to_s3(raw_bytes, s3_key)
+    await upload_bytes_to_s3_async(raw_bytes, s3_key, content_type="audio/mpeg")
 
     cover_path = await _persist_track_cover(
         user_id=current_user.id,
@@ -1218,7 +1209,7 @@ async def _create_track_from_direct_url(
 
     track_id = str(uuid.uuid4())
     s3_key = _build_s3_track_key(current_user.id, track_id)
-    _upload_bytes_to_s3(raw_bytes, s3_key, content_type=content_type)
+    await upload_bytes_to_s3_async(raw_bytes, s3_key, content_type=content_type)
     cover_path = None
     if parsed_meta.get("cover_data"):
         cover_path = await _persist_track_cover(
@@ -1527,6 +1518,7 @@ async def get_tracks(
         track_out = schemas.TrackResponse.model_validate(track)
         track_dict = track_out.model_dump(mode="json")
         track_dict["is_frozen"] = _track_is_frozen(track, current_user.storage_limit)
+        track_dict["has_cover"] = bool(track.cover_path)
         result_tracks.append(track_dict)
 
     body = {

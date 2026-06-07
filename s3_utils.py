@@ -22,10 +22,14 @@ STREAM_PRESIGNED_ENABLED = (
     in {"1", "true", "yes"}
 )
 
+S3_CONNECT_TIMEOUT = max(5, int(os.getenv("S3_CONNECT_TIMEOUT", "10")))
+S3_READ_TIMEOUT = max(30, int(os.getenv("S3_READ_TIMEOUT", "180")))
+S3_MAX_ATTEMPTS = max(2, int(os.getenv("S3_MAX_ATTEMPTS", "4")))
+
 S3_CLIENT_CONFIG = Config(
-    connect_timeout=5,
-    read_timeout=20,
-    retries={"max_attempts": 2, "mode": "standard"},
+    connect_timeout=S3_CONNECT_TIMEOUT,
+    read_timeout=S3_READ_TIMEOUT,
+    retries={"max_attempts": S3_MAX_ATTEMPTS, "mode": "standard"},
 )
 
 
@@ -79,6 +83,37 @@ async def get_object_async(object_key: str, range_value: str | None = None) -> d
         return get_s3_client().get_object(**kwargs)
 
     return await asyncio.to_thread(_get)
+
+
+def upload_bytes_to_s3(
+    file_bytes: bytes,
+    object_name: str,
+    *,
+    content_type: str = "application/octet-stream",
+) -> None:
+    from io import BytesIO
+
+    s3_client = get_s3_client()
+    s3_client.upload_fileobj(
+        BytesIO(file_bytes),
+        S3_BUCKET_NAME,
+        object_name,
+        ExtraArgs={"ContentType": content_type},
+    )
+
+
+async def upload_bytes_to_s3_async(
+    file_bytes: bytes,
+    object_name: str,
+    *,
+    content_type: str = "application/octet-stream",
+) -> None:
+    await asyncio.to_thread(
+        upload_bytes_to_s3,
+        file_bytes,
+        object_name,
+        content_type=content_type,
+    )
 
 
 def upload_file_to_s3(file_obj, object_name):

@@ -146,7 +146,8 @@ class TrackResponse(BaseModel):
     file_size: int
     created_at: datetime
     is_frozen: bool = False
-    
+    has_cover: bool = False
+
     class Config:
         from_attributes = True
 
