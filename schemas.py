@@ -155,6 +155,15 @@ class TracksList(BaseModel):
     total: int
     unchanged: bool = False
     revision: Optional[int] = None
+    next_cursor: Optional[str] = None
+    has_more: bool = False
+
+
+class StreamTokenResponse(BaseModel):
+    token: str
+    url: str
+    presigned_url: Optional[str] = None
+    expires_in: Optional[int] = None
 
 
 class LibraryRevisionResponse(BaseModel):

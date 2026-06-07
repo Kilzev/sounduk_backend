@@ -1,5 +1,6 @@
 # db_backup.py - Бэкап и восстановление БД через S3
 import fcntl
+import logging
 import os
 import shutil
 import threading
@@ -8,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 
 from s3_utils import get_s3_client, S3_BUCKET_NAME
+
+logger = logging.getLogger("sounduk.db_backup")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "database.db")
@@ -47,9 +50,9 @@ def run_startup_once() -> bool:
     """S3 restore + periodic backup — только в одном uvicorn worker."""
     with _StartupLock() as lock:
         if not lock.acquired:
-            print("[db_backup] ⏭ startup уже выполнен другим worker")
+            logger.info("startup skipped (another worker holds lock)")
             return False
-        download_db_from_s3()
+        threading.Thread(target=download_db_from_s3, daemon=True).start()
         start_periodic_backup()
         return True
 
@@ -57,7 +60,7 @@ def run_startup_once() -> bool:
 def upload_db_to_s3():
     """Загружает текущую БД на S3 с версионированием"""
     if not os.path.exists(DB_PATH):
-        print("[db_backup] database.db не найден, пропуск бэкапа")
+        logger.warning("database.db not found, skip backup")
         return False
 
     # Копируем файл чтобы не читать во время записи SQLite
@@ -77,11 +80,11 @@ def upload_db_to_s3():
             s3.upload_fileobj(f, S3_BUCKET_NAME, timestamped_key)
 
         size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
-        print(f"[db_backup] ✅ БД загружена на S3: {timestamped_key} ({size_mb:.1f} MB)")
+        logger.info("db uploaded to S3 key=%s size_mb=%.1f", timestamped_key, size_mb)
         return True
 
     except Exception as e:
-        print(f"[db_backup] ❌ Ошибка загрузки на S3: {e}")
+        logger.error("db upload to S3 failed error=%s", e)
         return False
     finally:
         if os.path.exists(tmp_path):
@@ -98,7 +101,7 @@ def download_db_from_s3():
             s3_obj = s3.head_object(Bucket=S3_BUCKET_NAME, Key=S3_DB_LATEST_KEY)
             s3_modified = s3_obj.get("LastModified")
         except:
-            print("[db_backup] ⚠️  Бэкап на S3 не найден, использую локальную БД")
+            logger.warning("S3 backup not found, using local db")
             return False
 
         # Если локальной БД нет или она старше S3 версии - скачиваем
@@ -111,17 +114,17 @@ def download_db_from_s3():
             s3_modified_naive = s3_modified.replace(tzinfo=None)
 
             if local_modified >= s3_modified_naive:
-                print(f"[db_backup] 📦 Локальная БД актуальна, синхронизация не требуется")
+                logger.info("local db is up to date, skip S3 restore")
                 return False
 
         # Скачиваем с S3
         s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, DB_PATH)
         size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
-        print(f"[db_backup] ✅ БД восстановлена с S3 ({size_mb:.1f} MB)")
+        logger.info("db restored from S3 size_mb=%.1f", size_mb)
         return True
 
     except Exception as e:
-        print(f"[db_backup] ❌ Ошибка загрузки с S3: {e}")
+        logger.error("db restore from S3 failed error=%s", e)
         return False
 
 
@@ -133,7 +136,7 @@ def _backup_loop():
             if not _stop_event.is_set():
                 upload_db_to_s3()
         except Exception as e:
-            print(f"[db_backup] ❌ Ошибка в цикле бэкапа: {e}")
+            logger.error("backup loop error=%s", e)
             # Продолжаем работу даже если бэкап не удался
 
 
@@ -144,7 +147,7 @@ def start_periodic_backup():
     _backup_thread = threading.Thread(target=_backup_loop, daemon=True)
     _backup_thread.start()
     interval_min = BACKUP_INTERVAL_SECONDS // 60
-    print(f"[db_backup] 🔄 Периодический бэкап запущен (каждые {interval_min} мин)")
+    logger.info("periodic backup started interval_min=%s", interval_min)
 
 
 def stop_periodic_backup():
@@ -152,4 +155,4 @@ def stop_periodic_backup():
     _stop_event.set()
     if _backup_thread:
         _backup_thread.join(timeout=5)
-    print("[db_backup] 🛑 Периодический бэкап остановлен")
+    logger.info("periodic backup stopped")

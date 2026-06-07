@@ -1,5 +1,7 @@
 # api/tracks.py - Роуты для работы с треками
 import email
+import logging
+import time
 from urllib.parse import quote, unquote
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, Request, Header, BackgroundTasks
 from fastapi.responses import StreamingResponse, Response, JSONResponse
@@ -35,12 +37,66 @@ from cover_storage import (
     resolve_cover_image,
     upload_track_cover_to_s3,
 )
-from s3_utils import get_s3_client, S3_BUCKET_NAME
+from s3_utils import (
+    S3_BUCKET_NAME,
+    STREAM_PRESIGNED_ENABLED,
+    STREAM_PRESIGNED_TTL,
+    get_object_async,
+    get_s3_client,
+    presigned_url_async,
+)
 from youtube_converter import download_youtube_mp3_with_meta, expand_playlist_watch_urls_sync
 
 load_dotenv()
 
 router = APIRouter()
+tracks_logger = logging.getLogger("sounduk.tracks")
+
+
+def _track_log(event: str, track_id: str | None = None, **fields) -> None:
+    parts = [f"event={event}"]
+    if track_id:
+        parts.append(f"track_id={track_id}")
+    for key, value in fields.items():
+        parts.append(f"{key}={value}")
+    tracks_logger.info(" ".join(parts))
+
+
+def _is_s3_track_file(file_path: str) -> bool:
+    return not Path(str(file_path)).exists()
+
+
+def _rebuild_cumulative_bytes(db: Session, user_id: int) -> None:
+    tracks = (
+        db.query(models.Track)
+        .filter(models.Track.user_id == user_id)
+        .order_by(models.Track.created_at.asc(), models.Track.id.asc())
+        .all()
+    )
+    running = 0
+    for track in tracks:
+        running += track.file_size
+        track.cumulative_bytes = running
+
+
+def _track_is_frozen(track: models.Track, storage_limit: int) -> bool:
+    return track.cumulative_bytes > storage_limit
+
+
+def _make_track_cursor(track: models.Track) -> str:
+    return f"{track.created_at.isoformat()}|{track.id}"
+
+
+def _parse_track_cursor(cursor: str) -> tuple[datetime, str]:
+    if "|" not in cursor:
+        raise HTTPException(status_code=400, detail="Некорректный cursor")
+    created_raw, track_id = cursor.split("|", 1)
+    try:
+        created_at = datetime.fromisoformat(created_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Некорректный cursor") from exc
+    return created_at, track_id
+
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -797,29 +853,39 @@ def _resolve_mime_type(path_like: str, fallback: str = "audio/mpeg") -> str:
     return mime_types.get(suffix, fallback)
 
 
-def _stream_s3_object_with_range(
+async def _stream_s3_object_with_range(
     object_key: str,
     file_size: int,
     range_header: str | None,
     filename: str,
     fallback_mime: str = "audio/mpeg",
 ) -> StreamingResponse:
-    s3_client = get_s3_client()
     start, end = _parse_range_header(range_header, file_size)
     chunk_size = end - start + 1
     range_value = f"bytes={start}-{end}"
 
+    s3_get_start = time.perf_counter()
     try:
-        obj = s3_client.get_object(
-            Bucket=S3_BUCKET_NAME,
-            Key=object_key,
-            Range=range_value,
-        )
+        obj = await get_object_async(object_key, range_value)
     except Exception as exc:
+        _track_log(
+            "s3_get_object_fail",
+            key=object_key,
+            range=range_value,
+            error=type(exc).__name__,
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Файл не найден в S3: {exc}"
         ) from exc
+    s3_get_ms = int((time.perf_counter() - s3_get_start) * 1000)
+    _track_log(
+        "s3_get_object_ok",
+        key=object_key,
+        range=range_value,
+        chunk_bytes=chunk_size,
+        s3_get_ms=s3_get_ms,
+    )
 
     body = obj["Body"]
     content_type = obj.get("ContentType") or _resolve_mime_type(object_key, fallback=fallback_mime)
@@ -1102,6 +1168,8 @@ async def _create_track_from_remote(
         created_at=datetime.utcnow(),
     )
     db.add(new_track)
+    db.flush()
+    _rebuild_cumulative_bytes(db, current_user.id)
     db.commit()
     db.refresh(new_track)
     bump_library_revision(db, current_user.id)
@@ -1195,6 +1263,8 @@ async def _create_track_from_direct_url(
         created_at=datetime.utcnow(),
     )
     db.add(new_track)
+    db.flush()
+    _rebuild_cumulative_bytes(db, current_user.id)
     db.commit()
     db.refresh(new_track)
     bump_library_revision(db, current_user.id)
@@ -1291,12 +1361,14 @@ async def upload_track(
         )
         
         db.add(new_track)
+        db.flush()
+        _rebuild_cumulative_bytes(db, current_user.id)
         db.commit()
         db.refresh(new_track)
         bump_library_revision(db, current_user.id)
-        
+
         return new_track
-        
+
     except Exception as e:
         print(f"Error uploading file: {e}")
         if 'file_path_local' in locals() and file_path_local.exists():
@@ -1309,31 +1381,67 @@ async def get_track_cover(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    t0 = time.perf_counter()
     track = db.query(models.Track).filter(
         models.Track.id == track_id,
         models.Track.user_id == current_user.id
     ).first()
 
     if not track or not track.cover_path:
+        _track_log(
+            "cover_not_found",
+            track_id,
+            user_id=current_user.id,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
         raise HTTPException(status_code=404, detail="Обложка не найдена")
 
     cover_file = Path(track.cover_path)
     if not cover_file.exists():
-        # Fallback: cover may be stored in S3 as object key.
+        s3_start = time.perf_counter()
         try:
             s3_client = get_s3_client()
             obj = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=str(track.cover_path))
             content_type = obj.get("ContentType", "image/jpeg")
+            body = obj["Body"].read()
+            total_ms = int((time.perf_counter() - t0) * 1000)
+            s3_ms = int((time.perf_counter() - s3_start) * 1000)
+            _track_log(
+                "cover_ok",
+                track_id,
+                user_id=current_user.id,
+                source="s3",
+                bytes=len(body),
+                s3_ms=s3_ms,
+                total_ms=total_ms,
+            )
             return Response(
-                content=obj["Body"].read(),
+                content=body,
                 media_type=content_type,
                 headers={"Cache-Control": "public, max-age=86400"}
             )
-        except Exception:
+        except Exception as exc:
+            _track_log(
+                "cover_s3_fail",
+                track_id,
+                user_id=current_user.id,
+                error=type(exc).__name__,
+                total_ms=int((time.perf_counter() - t0) * 1000),
+            )
             raise HTTPException(status_code=404, detail="Файл обложки не найден")
 
+    body = cover_file.read_bytes()
+    total_ms = int((time.perf_counter() - t0) * 1000)
+    _track_log(
+        "cover_ok",
+        track_id,
+        user_id=current_user.id,
+        source="disk",
+        bytes=len(body),
+        total_ms=total_ms,
+    )
     return Response(
-        content=cover_file.read_bytes(),
+        content=body,
         media_type="image/jpeg",
         headers={"Cache-Control": "public, max-age=86400"}
     )
@@ -1341,46 +1449,99 @@ async def get_track_cover(
 @router.get("")
 async def get_tracks(
     since_revision: int | None = Query(None, alias="since_revision"),
+    limit: int | None = Query(None, ge=1, le=200),
+    cursor: str | None = Query(None),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    t0 = time.perf_counter()
     revision = current_library_revision(db, current_user.id)
     headers = {"X-Library-Revision": str(revision)}
 
     if since_revision is not None and since_revision == revision:
+        _track_log(
+            "list_tracks_unchanged",
+            user_id=current_user.id,
+            revision=revision,
+            since_revision=since_revision,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
         return JSONResponse(
             content={
                 "unchanged": True,
                 "revision": revision,
                 "tracks": [],
                 "total": 0,
+                "has_more": False,
             },
             headers=headers,
         )
 
-    tracks = db.query(models.Track).filter(
-        models.Track.user_id == current_user.id
-    ).order_by(models.Track.created_at.asc()).all()
-    
-    current_storage: int = 0
+    total_count = (
+        db.query(func.count(models.Track.id))
+        .filter(models.Track.user_id == current_user.id)
+        .scalar()
+        or 0
+    )
+
+    query = db.query(models.Track).filter(models.Track.user_id == current_user.id)
+    if cursor:
+        created_at, track_id = _parse_track_cursor(cursor)
+        query = query.filter(
+            (models.Track.created_at > created_at)
+            | (
+                (models.Track.created_at == created_at)
+                & (models.Track.id > track_id)
+            )
+        )
+
+    query = query.order_by(models.Track.created_at.asc(), models.Track.id.asc())
+
+    has_more = False
+    next_cursor: str | None = None
+    if limit is not None:
+        tracks = query.limit(limit + 1).all()
+        if len(tracks) > limit:
+            has_more = True
+            tracks = tracks[:limit]
+            next_cursor = _make_track_cursor(tracks[-1])
+    else:
+        tracks_logger.warning(
+            "list_tracks_no_limit user_id=%s total=%s",
+            current_user.id,
+            total_count,
+        )
+        tracks = query.all()
+
     result_tracks = []
-    
-    for t in tracks:
-        current_storage += t.file_size
-        is_frozen = current_storage > current_user.storage_limit
-        track_out = schemas.TrackResponse.model_validate(t)
+    for track in tracks:
+        track_out = schemas.TrackResponse.model_validate(track)
         track_dict = track_out.model_dump(mode="json")
-        track_dict["is_frozen"] = is_frozen
+        track_dict["is_frozen"] = _track_is_frozen(track, current_user.storage_limit)
         result_tracks.append(track_dict)
-    
+
     body = {
         "tracks": result_tracks,
-        "total": len(result_tracks),
+        "total": total_count,
+        "has_more": has_more,
     }
+    if next_cursor:
+        body["next_cursor"] = next_cursor
     if since_revision is not None:
         body["unchanged"] = False
         body["revision"] = revision
 
+    _track_log(
+        "list_tracks_ok",
+        user_id=current_user.id,
+        count=len(result_tracks),
+        revision=revision,
+        since_revision=since_revision,
+        limit=limit,
+        cursor=bool(cursor),
+        has_more=has_more,
+        total_ms=int((time.perf_counter() - t0) * 1000),
+    )
     return JSONResponse(content=body, headers=headers)
 
 @router.get("/{track_id}/stream")
@@ -1403,23 +1564,19 @@ async def stream_track(
         )
         
     # Проверка на заморозку (если не админ)
-    if not getattr(current_user, 'is_admin', False) and track.user_id == current_user.id:
-        older_tracks = db.query(models.Track).filter(
-            models.Track.user_id == current_user.id,
-            models.Track.created_at <= track.created_at
-        ).all()
-        # Суммируем размер всех старых треков и текущего
-        total_size = sum(t.file_size for t in older_tracks)
-        
-        if total_size > current_user.storage_limit:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Этот трек заморожен, так как превышен лимит хранилища. Оплатите подписку или удалите старые треки."
-            )
-    
+    if (
+        not getattr(current_user, 'is_admin', False)
+        and track.user_id == current_user.id
+        and _track_is_frozen(track, current_user.storage_limit)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Этот трек заморожен, так как превышен лимит хранилища. Оплатите подписку или удалите старые треки."
+        )
+
     # Check if this is a path (local) or S3 key
     file_path = Path(str(track.file_path))
-    
+
     if file_path.exists():
         # Local file
         mime_type = _resolve_mime_type(str(file_path))
@@ -1440,54 +1597,83 @@ async def stream_track(
             }
         )
     else:
-        # S3 fallback for imported/cloud tracks.
-        s3_client = get_s3_client()
-        try:
-            head = s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=str(track.file_path))
-            file_size = int(head.get("ContentLength", track.file_size))
-        except Exception as exc:
-            raise HTTPException(status_code=404, detail=f"Файл не найден в S3: {exc}") from exc
-
+        file_size = track.file_size
         filename = f"{track.title}{Path(str(track.file_path)).suffix or '.mp3'}"
-        return _stream_s3_object_with_range(
+        return await _stream_s3_object_with_range(
             object_key=str(track.file_path),
             file_size=file_size,
             range_header="bytes=0-{}".format(max(0, file_size - 1)),
             filename=filename,
         )
 
-@router.get("/{track_id}/token")
+@router.get("/{track_id}/token", response_model=schemas.StreamTokenResponse)
 async def get_track_token(
     track_id: str,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    t0 = time.perf_counter()
     track = db.query(models.Track).filter(
         models.Track.id == track_id,
         models.Track.user_id == current_user.id
     ).first()
     
     if not track:
+        _track_log(
+            "token_not_found",
+            track_id,
+            user_id=current_user.id,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Трек не найден"
         )
         
-    # Проверка на заморозку
-    older_tracks = db.query(models.Track).filter(
-        models.Track.user_id == current_user.id,
-        models.Track.created_at <= track.created_at
-    ).all()
-    total_size = sum(t.file_size for t in older_tracks)
-    
-    if total_size > current_user.storage_limit:
+    freeze_start = time.perf_counter()
+    is_frozen = _track_is_frozen(track, current_user.storage_limit)
+    freeze_ms = int((time.perf_counter() - freeze_start) * 1000)
+
+    if is_frozen:
+        _track_log(
+            "token_frozen",
+            track_id,
+            user_id=current_user.id,
+            freeze_check_ms=freeze_ms,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Этот трек заморожен, так как превышен лимит хранилища. Оплатите подписку или удалите старые треки."
         )
-        
+
     token = create_stream_token(track_id)
-    return {"token": token, "url": f"/api/tracks/play/{token}"}
+    proxy_url = f"/api/tracks/play/{token}"
+    presigned_url: str | None = None
+    expires_in: int | None = None
+
+    if STREAM_PRESIGNED_ENABLED and _is_s3_track_file(str(track.file_path)):
+        presigned_url = await presigned_url_async(
+            str(track.file_path),
+            expiration=STREAM_PRESIGNED_TTL,
+        )
+        if presigned_url:
+            expires_in = STREAM_PRESIGNED_TTL
+
+    _track_log(
+        "token_issued",
+        track_id,
+        user_id=current_user.id,
+        freeze_check_ms=freeze_ms,
+        presigned=bool(presigned_url),
+        total_ms=int((time.perf_counter() - t0) * 1000),
+    )
+    return schemas.StreamTokenResponse(
+        token=token,
+        url=proxy_url,
+        presigned_url=presigned_url,
+        expires_in=expires_in,
+    )
 
 @router.get("/play/{token}")
 async def play_track(
@@ -1496,37 +1682,44 @@ async def play_track(
     range: str = Header(None),
     db: Session = Depends(get_db)
 ):
+    t0 = time.perf_counter()
     try:
         payload = decode_token(token)
         if payload.get("type") != "stream":
             raise HTTPException(status_code=401, detail="Invalid token type")
         track_id = payload.get("sub")
     except Exception:
+        _track_log("play_invalid_token", total_ms=int((time.perf_counter() - t0) * 1000))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
     track = db.query(models.Track).filter(models.Track.id == track_id).first()
     
     if not track:
+        _track_log(
+            "play_not_found",
+            track_id,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Трек не найден"
         )
     
-    # Local File Stream with Range support
     file_path = Path(str(track.file_path))
     if not file_path.exists():
-        # Fallback to S3 object stream for cloud-imported tracks.
-        s3_client = get_s3_client()
-        try:
-            head = s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=str(track.file_path))
-            file_size = int(head.get("ContentLength", track.file_size))
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Файл не найден на сервере: {exc}"
-            ) from exc
+        file_size = track.file_size
+        start_byte, end_byte = _parse_range_header(range, file_size)
+        _track_log(
+            "play_start",
+            track_id,
+            source="s3",
+            range=range,
+            chunk=f"{start_byte}-{end_byte}",
+            file_size=file_size,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
         filename = f"{track.title}{Path(str(track.file_path)).suffix or '.mp3'}"
-        return _stream_s3_object_with_range(
+        return await _stream_s3_object_with_range(
             object_key=str(track.file_path),
             file_size=file_size,
             range_header=range,
@@ -1535,6 +1728,15 @@ async def play_track(
     
     file_size = file_path.stat().st_size
     start, end = _parse_range_header(range, file_size)
+    _track_log(
+        "play_start",
+        track_id,
+        source="local",
+        range=range,
+        chunk=f"{start}-{end}",
+        file_size=file_size,
+        total_ms=int((time.perf_counter() - t0) * 1000),
+    )
     chunk_size = end - start + 1
     
     mime_type = _resolve_mime_type(str(file_path))
@@ -2002,8 +2204,11 @@ async def delete_track(
         except Exception:
             pass
 
+    owner_id = track.user_id
     db.delete(track)
+    db.flush()
+    _rebuild_cumulative_bytes(db, owner_id)
     db.commit()
-    bump_library_revision(db, track.user_id)
-    
+    bump_library_revision(db, owner_id)
+
     return None

@@ -253,6 +253,46 @@ def migrate_create_registration_limits(cursor):
     print("[registration_limits] Готово")
 
 
+def migrate_add_cumulative_bytes(cursor):
+    """Добавляет cumulative_bytes для O(1) freeze-check."""
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
+    if not cursor.fetchone():
+        print("[tracks] Таблица не существует — пропуск cumulative_bytes")
+        return
+
+    cursor.execute("PRAGMA table_info(tracks)")
+    column_names = [col[1] for col in cursor.fetchall()]
+    if "cumulative_bytes" not in column_names:
+        print("[tracks] Добавление колонки cumulative_bytes...")
+        cursor.execute(
+            "ALTER TABLE tracks ADD COLUMN cumulative_bytes INTEGER NOT NULL DEFAULT 0"
+        )
+        print("[tracks] cumulative_bytes добавлена")
+
+    cursor.execute(
+        "SELECT DISTINCT user_id FROM tracks ORDER BY user_id"
+    )
+    user_ids = [row[0] for row in cursor.fetchall()]
+    for user_id in user_ids:
+        cursor.execute(
+            """
+            SELECT id, file_size
+            FROM tracks
+            WHERE user_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (user_id,),
+        )
+        running = 0
+        for track_id, file_size in cursor.fetchall():
+            running += int(file_size or 0)
+            cursor.execute(
+                "UPDATE tracks SET cumulative_bytes = ? WHERE id = ?",
+                (running, track_id),
+            )
+    print(f"[tracks] backfill cumulative_bytes для {len(user_ids)} пользователей")
+
+
 def migrate_add_library_revision(cursor):
     """Добавляет library_revision для incremental sync клиентов."""
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
@@ -291,6 +331,7 @@ def migrate():
         migrate_remove_recovery_code(cursor)
         migrate_create_admin_audit_log(cursor)
         migrate_add_library_revision(cursor)
+        migrate_add_cumulative_bytes(cursor)
         conn.commit()
         print("\nВсе миграции выполнены успешно!")
     except Exception as e:
