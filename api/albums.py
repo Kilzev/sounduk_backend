@@ -6,15 +6,20 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from fastapi.responses import Response, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from auth_utils import get_current_user
+from cover_cache import (
+    cover_cache_headers,
+    invalidate as invalidate_cover_cache,
+    is_not_modified,
+    resolve_cover,
+)
 from cover_storage import (
     delete_cover_from_s3,
-    read_cover_from_s3,
     resolve_cover_image,
     upload_album_cover_to_s3,
 )
@@ -109,12 +114,12 @@ def _normalize_track_ids(raw: Any) -> list[str]:
     return []
 
 
-def _album_cover_bytes(album: models.Album) -> Optional[bytes]:
-    if album.cover_path:
-        try:
-            return read_cover_from_s3(album.cover_path)
-        except Exception as exc:
-            logger.warning("Failed to read album cover from S3 %s: %s", album.cover_path, exc)
+def _album_cover_bytes_inline(album: models.Album) -> Optional[bytes]:
+    """Обложка из БД без S3 — для GET /api/albums (список).
+
+    Обложки на S3 отдаются отдельно через GET /api/albums/{id}/cover.
+    Синхронный S3 в списке блокировал event loop на 30+ с при timeout Selectel.
+    """
     if album.cover_art:
         raw = album.cover_art
         if isinstance(raw, memoryview):
@@ -135,11 +140,13 @@ async def _apply_album_cover_update(
         cover_bytes = _decode_cover_art(cover_art_b64)
         if cover_bytes == b"":
             delete_cover_from_s3(album.cover_path)
+            invalidate_cover_cache(f"album:{user_id}:{album.id}")
             album.cover_path = None
             album.cover_art = None
             return
         if cover_bytes is not None:
             delete_cover_from_s3(album.cover_path)
+            invalidate_cover_cache(f"album:{user_id}:{album.id}")
             album.cover_path = upload_album_cover_to_s3(cover_bytes, user_id, album.id)
             album.cover_art = None
         return
@@ -148,6 +155,7 @@ async def _apply_album_cover_update(
         url = cover_url.strip()
         if not url:
             delete_cover_from_s3(album.cover_path)
+            invalidate_cover_cache(f"album:{user_id}:{album.id}")
             album.cover_path = None
             album.cover_art = None
             return
@@ -158,6 +166,7 @@ async def _apply_album_cover_update(
                 detail=f"Обложка превышает максимальный размер {COVER_ART_MAX_BYTES} байт",
             )
         delete_cover_from_s3(album.cover_path)
+        invalidate_cover_cache(f"album:{user_id}:{album.id}")
         album.cover_path = upload_album_cover_to_s3(cover_bytes, user_id, album.id)
         album.cover_art = None
 
@@ -170,7 +179,7 @@ def _to_out(album: models.Album) -> AlbumOut:
         title=album.title,
         description=album.description,
         trackIds=_normalize_track_ids(album.track_ids),
-        coverArt=_encode_cover_art(_album_cover_bytes(album)),
+        coverArt=_encode_cover_art(_album_cover_bytes_inline(album)),
         createdAt=created_at,
         updatedAt=updated_at,
     )
@@ -213,6 +222,7 @@ async def get_albums(
 @router.get("/{album_id}/cover")
 async def get_album_cover(
     album_id: str,
+    request: Request,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -223,15 +233,30 @@ async def get_album_cover(
     if not album:
         raise HTTPException(status_code=404, detail="Альбом не найден")
 
-    cover_bytes = _album_cover_bytes(album)
-    if not cover_bytes:
+    cache_key = f"album:{current_user.id}:{album_id}"
+    s3_key = str(album.cover_path) if album.cover_path else None
+    inline_bytes = None
+    if not s3_key and album.cover_art:
+        raw = album.cover_art
+        inline_bytes = raw.tobytes() if isinstance(raw, memoryview) else raw
+
+    if not s3_key and not inline_bytes:
         raise HTTPException(status_code=404, detail="Обложка не найдена")
 
-    return Response(
-        content=cover_bytes,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=86400"},
-    )
+    try:
+        body, content_type, _source = await resolve_cover(
+            cache_key,
+            s3_key=s3_key,
+            inline_bytes=inline_bytes,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Обложка не найдена") from exc
+
+    headers = cover_cache_headers(body)
+    if is_not_modified(request.headers.get("if-none-match"), body):
+        return Response(status_code=304, headers=headers)
+
+    return Response(content=body, media_type=content_type, headers=headers)
 
 
 @router.post("", response_model=AlbumOut, status_code=status.HTTP_201_CREATED)

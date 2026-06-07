@@ -31,6 +31,12 @@ from mutagen.flac import FLAC
 from mutagen import File as MutagenFile
 from dotenv import load_dotenv
 from library_sync import bump_library_revision, current_library_revision
+from cover_cache import (
+    cover_cache_headers,
+    invalidate as invalidate_cover_cache,
+    is_not_modified,
+    resolve_cover,
+)
 from cover_storage import (
     delete_cover_from_s3,
     download_cover_by_url,
@@ -1378,8 +1384,9 @@ async def upload_track(
 @router.get("/{track_id}/cover")
 async def get_track_cover(
     track_id: str,
+    request: Request,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     t0 = time.perf_counter()
     track = db.query(models.Track).filter(
@@ -1396,55 +1403,57 @@ async def get_track_cover(
         )
         raise HTTPException(status_code=404, detail="Обложка не найдена")
 
+    cache_key = f"track:{current_user.id}:{track_id}"
     cover_file = Path(track.cover_path)
-    if not cover_file.exists():
-        s3_start = time.perf_counter()
-        try:
-            s3_client = get_s3_client()
-            obj = s3_client.get_object(Bucket=S3_BUCKET_NAME, Key=str(track.cover_path))
-            content_type = obj.get("ContentType", "image/jpeg")
-            body = obj["Body"].read()
-            total_ms = int((time.perf_counter() - t0) * 1000)
-            s3_ms = int((time.perf_counter() - s3_start) * 1000)
-            _track_log(
-                "cover_ok",
-                track_id,
-                user_id=current_user.id,
-                source="s3",
-                bytes=len(body),
-                s3_ms=s3_ms,
-                total_ms=total_ms,
-            )
-            return Response(
-                content=body,
-                media_type=content_type,
-                headers={"Cache-Control": "public, max-age=86400"}
-            )
-        except Exception as exc:
-            _track_log(
-                "cover_s3_fail",
-                track_id,
-                user_id=current_user.id,
-                error=type(exc).__name__,
-                total_ms=int((time.perf_counter() - t0) * 1000),
-            )
-            raise HTTPException(status_code=404, detail="Файл обложки не найден")
+    local_path = cover_file if cover_file.is_file() else None
+    s3_key = None if local_path else str(track.cover_path)
 
-    body = cover_file.read_bytes()
+    try:
+        body, content_type, source = await resolve_cover(
+            cache_key,
+            local_path=local_path,
+            s3_key=s3_key,
+        )
+    except FileNotFoundError:
+        _track_log(
+            "cover_s3_fail",
+            track_id,
+            user_id=current_user.id,
+            error="not_found",
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
+        raise HTTPException(status_code=404, detail="Файл обложки не найден")
+    except Exception as exc:
+        _track_log(
+            "cover_s3_fail",
+            track_id,
+            user_id=current_user.id,
+            error=type(exc).__name__,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
+        raise HTTPException(status_code=404, detail="Файл обложки не найден") from exc
+
+    headers = cover_cache_headers(body)
+    if is_not_modified(request.headers.get("if-none-match"), body):
+        _track_log(
+            "cover_not_modified",
+            track_id,
+            user_id=current_user.id,
+            source=source,
+            total_ms=int((time.perf_counter() - t0) * 1000),
+        )
+        return Response(status_code=304, headers=headers)
+
     total_ms = int((time.perf_counter() - t0) * 1000)
     _track_log(
         "cover_ok",
         track_id,
         user_id=current_user.id,
-        source="disk",
+        source=source,
         bytes=len(body),
         total_ms=total_ms,
     )
-    return Response(
-        content=body,
-        media_type="image/jpeg",
-        headers={"Cache-Control": "public, max-age=86400"}
-    )
+    return Response(content=body, media_type=content_type, headers=headers)
 
 @router.get("")
 async def get_tracks(
@@ -1799,10 +1808,12 @@ async def update_track(
 
     if payload.clear_cover:
         delete_cover_from_s3(track.cover_path)
+        invalidate_cover_cache(f"track:{current_user.id}:{track_id}")
         track.cover_path = None
     elif payload.cover_url:
         cover_bytes = await _download_cover_by_url(payload.cover_url.strip())
         delete_cover_from_s3(track.cover_path)
+        invalidate_cover_cache(f"track:{current_user.id}:{track_id}")
         track.cover_path = _upload_cover_to_s3(cover_bytes, current_user.id, track.id)
 
     db.commit()

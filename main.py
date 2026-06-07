@@ -1,6 +1,7 @@
 # main.py - Точка входа приложения
 import logging
 import os
+import threading
 
 from dotenv import load_dotenv
 
@@ -13,7 +14,7 @@ def _configure_app_logging() -> None:
     logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, force=True)
     handler = logging.StreamHandler()
     handler.setFormatter(logging.Formatter(_LOG_FORMAT))
-    for name in ("sounduk.http", "sounduk.tracks", "sounduk.s3"):
+    for name in ("sounduk.http", "sounduk.tracks", "sounduk.s3", "sounduk.cover_cache"):
         app_logger = logging.getLogger(name)
         app_logger.setLevel(logging.INFO)
         app_logger.handlers = [handler]
@@ -44,7 +45,8 @@ async def lifespan(app: FastAPI):
 
     # --- Shutdown ---
     stop_periodic_backup()
-    upload_db_to_s3()
+    # Не блокируем event loop при рестарте — иначе порт 8000 зависает занятым.
+    threading.Thread(target=upload_db_to_s3, daemon=True).start()
 
 
 app = FastAPI(
