@@ -16,3 +16,4 @@ venv.bak/
 uploads/
 database.db
 .env
+.startup.lock
