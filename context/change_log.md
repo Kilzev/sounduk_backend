@@ -1,5 +1,19 @@
 # Change Log
 
+## 2026-06-08 — Миграция API на новый сервер
+
+- **Новый хост:** `138.249.18.60` (`knyzeviv.oblaka.tech`), Ubuntu 24.04, 2 GB RAM + 512 MB swap.
+- **Путь:** `/var/www/sounduk_backend`, код + локальные `database.db` и `.env` (июнь 2026).
+- **Сервис:** `systemd` unit `sounduk.service` (`uvicorn --workers 1`, `Restart=always`).
+- **Nginx:** `/etc/nginx/sites-available/sounduk_backend` — `api.sounduk.ru` и IP → `:8000`.
+- **Проверка:** `curl -H "Host: api.sounduk.ru" http://138.249.18.60/` → 200.
+- **DNS:** `api.sounduk.ru` → `138.249.18.60` (проверено 2026-06-08).
+- **HTTPS:** Let's Encrypt для `api.sounduk.ru`, истекает 2026-09-06.
+- **БД:** восстановлена из S3 `backups/database_latest.db` (843 KB, 2026-06-08 15:18 UTC); старый сервер `185.76.242.73` недоступен по SSH.
+- **Стриминг:** `STREAM_PRESIGNED_ENABLED=true` — телефон качает с S3 напрямую (VPS не проксирует Selectel boto3).
+- **YouTube:** `sounduk-yt-proxy.service` на `138.249.18.60` → SOCKS `127.0.0.1:10801` → `77.110.107.73`; `YTDLP_PROXY=socks5h://127.0.0.1:10801`. Smoke: `eVTXPUF4Oz4` ~5 MB за ~14 с.
+- **deploy.sh:** SSH host обновлён на `138.249.18.60`, перезапуск через `systemctl restart sounduk`.
+
 ## 2026-06-04 — YouTube import: ConnectError после yt-dlp
 
 - **Причина:** MP3 скачивался через прокси, затем oembed к `youtube.com` без прокси с VPS в РФ → `httpx.ConnectError`.

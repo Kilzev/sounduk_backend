@@ -23,7 +23,7 @@ from cover_storage import (
     resolve_cover_image,
     upload_album_cover_to_s3,
 )
-from database import get_db
+from database import SessionLocal, get_db
 import models
 from library_sync import bump_library_revision, current_library_revision
 
@@ -224,22 +224,26 @@ async def get_album_cover(
     album_id: str,
     request: Request,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
-    album = db.query(models.Album).filter(
-        models.Album.id == album_id,
-        models.Album.user_id == current_user.id,
-    ).first()
-    if not album:
-        raise HTTPException(status_code=404, detail="Альбом не найден")
+    user_id = current_user.id
+    db = SessionLocal()
+    try:
+        album = db.query(models.Album).filter(
+            models.Album.id == album_id,
+            models.Album.user_id == user_id,
+        ).first()
+        if not album:
+            raise HTTPException(status_code=404, detail="Альбом не найден")
 
-    cache_key = f"album:{current_user.id}:{album_id}"
-    s3_key = str(album.cover_path) if album.cover_path else None
-    inline_bytes = None
-    if not s3_key and album.cover_art:
-        raw = album.cover_art
-        inline_bytes = raw.tobytes() if isinstance(raw, memoryview) else raw
+        s3_key = str(album.cover_path) if album.cover_path else None
+        inline_bytes = None
+        if not s3_key and album.cover_art:
+            raw = album.cover_art
+            inline_bytes = raw.tobytes() if isinstance(raw, memoryview) else raw
+    finally:
+        db.close()
 
+    cache_key = f"album:{user_id}:{album_id}"
     if not s3_key and not inline_bytes:
         raise HTTPException(status_code=404, detail="Обложка не найдена")
 

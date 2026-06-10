@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import uuid
 from pathlib import Path
 
@@ -22,6 +23,13 @@ YTDLP_COOKIES_FILE = (os.getenv("YTDLP_COOKIES_FILE") or "").strip()
 YTDLP_SOCKET_TIMEOUT = max(30, int(os.getenv("YTDLP_SOCKET_TIMEOUT", "180")))
 TMP_DIR = Path(os.getenv("YOUTUBE_TMP_DIR") or "uploads/youtube_tmp")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _ffmpeg_location() -> str | None:
+    explicit = (os.getenv("FFMPEG_LOCATION") or "").strip()
+    if explicit:
+        return explicit
+    return shutil.which("ffmpeg")
 
 
 def _build_ydl_opts(output_path: Path) -> dict:
@@ -48,6 +56,9 @@ def _build_ydl_opts(output_path: Path) -> dict:
         opts["proxy"] = YTDLP_PROXY
     if YTDLP_COOKIES_FILE and Path(YTDLP_COOKIES_FILE).is_file():
         opts["cookiefile"] = YTDLP_COOKIES_FILE
+    ffmpeg = _ffmpeg_location()
+    if ffmpeg:
+        opts["ffmpeg_location"] = ffmpeg
     return opts
 
 

@@ -4,6 +4,7 @@ from database import get_db
 import models
 import schemas
 from auth_utils import get_current_user, hash_password, verify_password
+from library_sync import current_library_revision
 from typing import Optional
 
 router = APIRouter()
@@ -13,10 +14,7 @@ async def get_library_revision(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    revision = current_user.library_revision or 1
-    # Refresh from DB in case the session object is stale.
-    db.refresh(current_user)
-    return {"revision": current_user.library_revision or revision}
+    return {"revision": current_library_revision(db, current_user.id)}
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)

@@ -12,6 +12,8 @@ from s3_utils import S3_BUCKET_NAME, get_object_async
 
 logger = logging.getLogger("sounduk.cover_cache")
 
+COVER_S3_TIMEOUT = max(5, int(os.getenv("COVER_S3_TIMEOUT", "15")))
+
 BASE_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
 CACHE_DIR = BASE_DIR / "uploads" / ".cover_cache"
 MEM_MAX_ITEMS = 256
@@ -93,10 +95,17 @@ async def _read_local(local_path: Path) -> bytes:
 
 
 async def _load_from_s3(s3_key: str) -> tuple[bytes, str]:
-    obj = await get_object_async(s3_key)
-    content_type = obj.get("ContentType") or "image/jpeg"
-    body = await asyncio.to_thread(obj["Body"].read)
-    return body, content_type
+    async def _fetch() -> tuple[bytes, str]:
+        obj = await get_object_async(s3_key)
+        content_type = obj.get("ContentType") or "image/jpeg"
+        body = await asyncio.to_thread(obj["Body"].read)
+        return body, content_type
+
+    try:
+        return await asyncio.wait_for(_fetch(), timeout=COVER_S3_TIMEOUT)
+    except asyncio.TimeoutError as exc:
+        logger.warning("cover_s3_timeout key=%s timeout=%ss", s3_key, COVER_S3_TIMEOUT)
+        raise TimeoutError(f"S3 cover timeout after {COVER_S3_TIMEOUT}s") from exc
 
 
 async def resolve_cover(

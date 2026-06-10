@@ -55,7 +55,7 @@ def decode_token(token: str) -> dict:
 async def get_current_user(
     auth: Optional[HTTPAuthorizationCredentials] = Depends(security),
     token: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> models.User:
     if auth:
         token_str = auth.credentials
@@ -90,20 +90,19 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Пользователь не найден"
         )
-    
+
     if user.is_restricted:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Аккаунт ограничен"
         )
-        
-    # Проверка истечения премиума и откат до базового 1 ГБ
+
     if user.is_premium and user.premium_expires_at:
         if datetime.utcnow() > user.premium_expires_at:
             user.is_premium = False
-            user.storage_limit = 1073741824 # 1 GB
+            user.storage_limit = 1073741824  # 1 GB
             db.commit()
-    
+
     return user
 
 async def get_verified_user(

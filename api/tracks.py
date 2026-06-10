@@ -15,7 +15,6 @@ from auth_utils import get_current_user, get_verified_user, create_stream_token,
 import uuid
 # from s3_utils import upload_file_to_s3, generate_presigned_url, delete_file_from_s3
 import os
-import shutil
 from pathlib import Path
 import asyncio
 from datetime import datetime
@@ -108,12 +107,9 @@ def _parse_track_cursor(cursor: str) -> tuple[datetime, str]:
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 YOUTUBE_IMPORT_MAX_ITEMS = int(os.getenv("YOUTUBE_IMPORT_MAX_ITEMS", "100"))
-# RapidAPI: https://rapidapi.com/elisbushaj2/api/youtube-mp310
-YOUTUBE_MP3_HOST_DEFAULT = "youtube-mp310.p.rapidapi.com"
-YOUTUBE_MP3_PATH_DEFAULT = "/download/mp3"
 _YOUTUBE_VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 _YOUTUBE_PLAYLIST_VIDEO_ID_RE = re.compile(r'"videoId":"([a-zA-Z0-9_-]{11})"')
-JOB_ITEM_AUTO_RETRIES = 2
+JOB_ITEM_AUTO_RETRIES = max(2, int(os.getenv("JOB_ITEM_AUTO_RETRIES", "4")))
 
 
 def _format_import_job_error(exc: BaseException) -> str:
@@ -151,17 +147,43 @@ def _is_non_retryable_import_error(message: str) -> bool:
         "this video is not available",
         "ожидается ссылка",
         "нет источника аудио",
-        "rapidapi_key не настроен",
     )
     return any(marker in lowered for marker in markers)
 
-
-def _rapidapi_configured() -> bool:
-    return bool((os.getenv("RAPIDAPI_KEY") or os.getenv("YOUTUBE_MP3_KEY") or "").strip())
-JOB_BATCH_SIZE = 20
-YOUTUBE_IMPORT_CONCURRENCY = max(1, min(int(os.getenv("YOUTUBE_IMPORT_CONCURRENCY", "2")), 4))
+# Плейлист: волнами по N треков (следующие N только после завершения текущей волны).
+YOUTUBE_IMPORT_BATCH_SIZE = max(1, min(int(os.getenv("YOUTUBE_IMPORT_BATCH_SIZE", "10")), 10))
+# Одновременных yt-dlp/импортов на весь сервер (между job'ами).
+YOUTUBE_IMPORT_CONCURRENCY = max(1, min(int(os.getenv("YOUTUBE_IMPORT_CONCURRENCY", "10")), 10))
+MAX_ACTIVE_IMPORT_JOBS_PER_USER = max(1, min(int(os.getenv("MAX_ACTIVE_IMPORT_JOBS_PER_USER", "10")), 10))
+_import_slot_semaphore = asyncio.Semaphore(YOUTUBE_IMPORT_CONCURRENCY)
 _running_import_jobs: set[str] = set()
 _running_jobs_lock = asyncio.Lock()
+IMPORT_WORKER_EXTERNAL = os.getenv("IMPORT_WORKER_EXTERNAL", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+def _count_active_import_jobs(db: Session, user_id: int) -> int:
+    return (
+        db.query(func.count(models.ImportJob.id))
+        .filter(
+            models.ImportJob.user_id == user_id,
+            models.ImportJob.status.in_(["pending", "running"]),
+        )
+        .scalar()
+        or 0
+    )
+
+
+def _ensure_import_job_capacity(db: Session, user: models.User) -> None:
+    active = _count_active_import_jobs(db, user.id)
+    if active >= MAX_ACTIVE_IMPORT_JOBS_PER_USER:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Слишком много активных загрузок (максимум {MAX_ACTIVE_IMPORT_JOBS_PER_USER}). Дождитесь завершения текущих.",
+        )
 
 
 def _extract_duration_seconds(item: dict[str, Any]) -> int:
@@ -245,12 +267,40 @@ def _refresh_job_counters(db: Session, job: models.ImportJob) -> None:
     job.processed_items = processed
 
 
-async def _schedule_import_job(job_id: str) -> None:
+async def _enqueue_import_job(job_id: str) -> None:
     async with _running_jobs_lock:
         if job_id in _running_import_jobs:
             return
         _running_import_jobs.add(job_id)
     asyncio.create_task(_run_import_job(job_id))
+
+
+async def _schedule_import_job(job_id: str) -> None:
+    if IMPORT_WORKER_EXTERNAL:
+        return
+    await _enqueue_import_job(job_id)
+
+
+async def run_import_worker_loop() -> None:
+    """Отдельный процесс: опрашивает БД и гоняет yt-dlp без нагрузки на API worker."""
+    tracks_logger.info(
+        "import_worker started batch=%s concurrency=%s",
+        YOUTUBE_IMPORT_BATCH_SIZE,
+        YOUTUBE_IMPORT_CONCURRENCY,
+    )
+    while True:
+        db = SessionLocal()
+        try:
+            jobs = (
+                db.query(models.ImportJob)
+                .filter(models.ImportJob.status.in_(["pending", "running"]))
+                .all()
+            )
+            for job in jobs:
+                await _enqueue_import_job(job.id)
+        finally:
+            db.close()
+        await asyncio.sleep(2)
 
 
 async def _process_import_job_item(item_id: int, job_id: str) -> str | None:
@@ -364,10 +414,8 @@ async def _run_import_job(job_id: str) -> None:
         job.status = "running"
         db.commit()
 
-        semaphore = asyncio.Semaphore(YOUTUBE_IMPORT_CONCURRENCY)
-
         async def _run_item(item_id: int) -> str | None:
-            async with semaphore:
+            async with _import_slot_semaphore:
                 return await _process_import_job_item(item_id, job_id)
 
         while True:
@@ -384,7 +432,7 @@ async def _run_import_job(job_id: str) -> None:
                     models.ImportJobItem.status == "pending",
                 )
                 .order_by(models.ImportJobItem.position.asc())
-                .limit(JOB_BATCH_SIZE)
+                .limit(YOUTUBE_IMPORT_BATCH_SIZE)
                 .all()
             )
             if not pending_items:
@@ -436,24 +484,6 @@ def _first_non_empty(data: dict[str, Any], keys: list[str], default: str = "") -
         if isinstance(value, str) and value.strip():
             return value.strip()
     return default
-
-
-def _youtube_mp3_endpoint() -> tuple[str, str]:
-    host = (os.getenv("YOUTUBE_MP3_HOST") or YOUTUBE_MP3_HOST_DEFAULT).strip().rstrip("/")
-    path = (os.getenv("YOUTUBE_MP3_PATH") or YOUTUBE_MP3_PATH_DEFAULT).strip()
-    if not path.startswith("/"):
-        path = f"/{path}"
-    return host, path
-
-
-def _rapidapi_key() -> str:
-    key = (os.getenv("RAPIDAPI_KEY") or os.getenv("YOUTUBE_MP3_KEY") or "").strip()
-    if not key:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="RAPIDAPI_KEY не настроен в .env (подписка youtube-mp310 на rapidapi.com)",
-        )
-    return key
 
 
 def _youtube_watch_url(video_id: str) -> str:
@@ -599,75 +629,6 @@ def _extract_download_url_from_json(payload: Any) -> str | None:
     return None
 
 
-def _parse_youtube_mp3_response(response: httpx.Response) -> str:
-    """youtube-mp310 обычно возвращает plain-text URL; иногда — JSON."""
-    text = (response.text or "").strip()
-    direct = _normalize_download_url(text)
-    if direct:
-        return direct
-    try:
-        payload = response.json()
-    except Exception:
-        payload = None
-    if isinstance(payload, dict):
-        download_url = _first_non_empty(
-            payload,
-            ["download_url", "downloadUrl", "url", "file", "audio", "audio_url", "link", "mp3"],
-        )
-        if download_url:
-            normalized = _normalize_download_url(download_url)
-            if normalized:
-                return normalized
-    found = _extract_download_url_from_json(payload)
-    if found:
-        return found
-    raise HTTPException(
-        status_code=status.HTTP_502_BAD_GATEWAY,
-        detail="YouTube MP3 API (youtube-mp310) не вернул ссылку на файл",
-    )
-
-
-def _rapidapi_error_detail(response: httpx.Response) -> str:
-    snippet = (response.text or "").strip().replace("\n", " ")[:240]
-    if snippet:
-        return f"YouTube MP3 API вернул {response.status_code}: {snippet}"
-    return (
-        f"YouTube MP3 API вернул {response.status_code}. "
-        "Проверьте RAPIDAPI_KEY, подписку youtube-mp310 и лимиты RapidAPI."
-    )
-
-
-def _youtube_audio_provider() -> str:
-    return (os.getenv("YOUTUBE_AUDIO_PROVIDER") or "ytdlp").strip().lower()
-
-
-async def _fetch_youtube_mp3_download_url(watch_url: str) -> str:
-    host, path = _youtube_mp3_endpoint()
-    headers = {
-        "x-rapidapi-key": _rapidapi_key(),
-        "x-rapidapi-host": host,
-        "Accept": "application/json,text/plain,*/*",
-    }
-    try:
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as client:
-            response = await client.get(
-                f"https://{host}{path}",
-                params={"url": watch_url},
-                headers=headers,
-            )
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Не удалось связаться с YouTube MP3 API: {exc}",
-        ) from exc
-    if response.status_code >= 400:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=_rapidapi_error_detail(response),
-        )
-    return _parse_youtube_mp3_response(response)
-
-
 async def _fetch_youtube_oembed_title(watch_url: str) -> str | None:
     headers = {"Accept": "application/json"}
     try:
@@ -750,25 +711,14 @@ async def _build_youtube_media_item(
     if not _is_youtube_watch_url(watch_url):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ожидается ссылка на YouTube-видео")
 
-    provider = _youtube_audio_provider()
     media: dict[str, Any] = {"duration": 0}
-    yt_title: str | None = None
-    yt_artist: str | None = None
-    if provider == "rapidapi":
-        media["download_url"] = await _fetch_youtube_mp3_download_url(watch_url)
-    else:
-        try:
-            audio_bytes, yt_title, yt_duration, yt_artist, yt_thumbnail = await download_youtube_mp3_with_meta(watch_url)
-            media["audio_bytes"] = audio_bytes
-            if yt_duration > 0:
-                media["duration"] = yt_duration
-            if yt_thumbnail:
-                media["thumbnail_url"] = yt_thumbnail
-        except HTTPException:
-            if _rapidapi_configured():
-                media["download_url"] = await _fetch_youtube_mp3_download_url(watch_url)
-            else:
-                raise
+    
+    audio_bytes, yt_title, yt_duration, yt_artist, yt_thumbnail = await download_youtube_mp3_with_meta(watch_url)
+    media["audio_bytes"] = audio_bytes
+    if yt_duration > 0:
+        media["duration"] = yt_duration
+    if yt_thumbnail:
+        media["thumbnail_url"] = yt_thumbnail
 
     resolved_title = _sanitize_meta_value(title)
     resolved_artist = _sanitize_meta_value(artist) or _sanitize_meta_value(yt_artist)
@@ -812,8 +762,9 @@ async def _download_binary(url: str) -> bytes:
         ) from exc
 
 
-def _build_s3_track_key(user_id: int, track_id: str) -> str:
-    return f"tracks/{user_id}/{track_id}.mp3"
+def _build_s3_track_key(user_id: int, track_id: str, extension: str = ".mp3") -> str:
+    ext = extension if extension.startswith(".") else f".{extension}"
+    return f"tracks/{user_id}/{track_id}{ext}"
 
 
 def _parse_range_header(range_header: str | None, file_size: int) -> tuple[int, int]:
@@ -1143,7 +1094,35 @@ async def _create_track_from_remote(
 
     track_id = str(uuid.uuid4())
     s3_key = _build_s3_track_key(current_user.id, track_id)
-    await upload_bytes_to_s3_async(raw_bytes, s3_key, content_type="audio/mpeg")
+    upload_t0 = time.perf_counter()
+    tracks_logger.info(
+        "import_s3_upload_start user_id=%s track_id=%s bytes=%s key=%s",
+        current_user.id,
+        track_id,
+        file_size,
+        s3_key,
+    )
+    try:
+        await upload_bytes_to_s3_async(raw_bytes, s3_key, content_type="audio/mpeg")
+    except Exception as exc:
+        tracks_logger.error(
+            "import_s3_upload_fail user_id=%s track_id=%s bytes=%s key=%s ms=%s error=%s",
+            current_user.id,
+            track_id,
+            file_size,
+            s3_key,
+            int((time.perf_counter() - upload_t0) * 1000),
+            exc,
+        )
+        raise
+    tracks_logger.info(
+        "import_s3_upload_ok user_id=%s track_id=%s bytes=%s key=%s ms=%s",
+        current_user.id,
+        track_id,
+        file_size,
+        s3_key,
+        int((time.perf_counter() - upload_t0) * 1000),
+    )
 
     cover_path = await _persist_track_cover(
         user_id=current_user.id,
@@ -1278,126 +1257,131 @@ async def upload_track(
     current_user: models.User = Depends(get_verified_user),
     db: Session = Depends(get_db)
 ):
-    # Проверка лимита места
     total_usage = db.query(func.sum(models.Track.file_size)).filter(
         models.Track.user_id == current_user.id
     ).scalar() or 0
-    
-    # Размер загружаемого файла (может быть недоступен точно до сохранения, но попробуем оценить)
-    # Здесь мы проверяем только текущее использование. Строгую проверку сделаем после сохранения.
-    if total_usage >= current_user.storage_limit:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Превышен лимит хранилища"
-        )
 
-    if not file.filename or not file.filename.endswith(('.mp3', '.m4a', '.wav', '.flac')):
+    if not file.filename or not file.filename.lower().endswith(
+        (".mp3", ".m4a", ".wav", ".flac")
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Неподдерживаемый формат файла"
+            detail="Неподдерживаемый формат файла",
         )
-    
-    file_extension = os.path.splitext(file.filename)[1]
-    track_id = str(uuid.uuid4())
-    
-    # LOCAL STORAGE
-    user_dir = UPLOAD_DIR / str(current_user.id)
-    user_dir.mkdir(exist_ok=True)
-    file_path_local = user_dir / f"{track_id}{file_extension}"
 
     try:
-        with open(file_path_local, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        file_size = os.path.getsize(file_path_local)
+        raw_bytes = await file.read()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Не удалось прочитать файл: {exc}",
+        ) from exc
 
-        # Извлекаем обложку из метаданных
-        cover_path = None
-        try:
-            audio = MutagenFile(str(file_path_local))
-            cover_data = None
-
-            if hasattr(audio, 'tags') and audio.tags:
-                # MP3 (ID3 tags)
-                for tag in audio.tags.values():
-                    if isinstance(tag, APIC):
-                        cover_data = tag.data
-                        break
-
-            if cover_data is None and hasattr(audio, 'pictures'):
-                # FLAC
-                if audio.pictures:
-                    cover_data = audio.pictures[0].data
-
-            if cover_data:
-                cover_file = user_dir / f"{track_id}.jpg"
-                with open(cover_file, "wb") as cf:
-                    cf.write(cover_data)
-                cover_path = str(cover_file)
-        except Exception as e:
-            print(f"Cover extraction error: {e}")
-
-        if total_usage + file_size > current_user.storage_limit:
-            os.remove(file_path_local) # Clean up
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Недостаточно места"
-            )
-            
-        new_track = models.Track(
-            id=track_id,
-            user_id=current_user.id,
-            title=title,
-            artist=artist,
-            album=album,
-            duration=duration,
-            file_path=str(file_path_local), # Store local path
-            file_size=file_size,
-            cover_path=cover_path,
-            created_at=datetime.fromisoformat(created_at) if created_at else datetime.utcnow()
+    file_size = len(raw_bytes)
+    if file_size <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Пустой файл",
         )
-        
-        db.add(new_track)
-        db.flush()
-        _rebuild_cumulative_bytes(db, current_user.id)
-        db.commit()
-        db.refresh(new_track)
-        bump_library_revision(db, current_user.id)
 
-        return new_track
+    if total_usage + file_size > current_user.storage_limit:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Недостаточно места",
+        )
 
-    except Exception as e:
-        print(f"Error uploading file: {e}")
-        if 'file_path_local' in locals() and file_path_local.exists():
-             os.remove(file_path_local)
-        raise HTTPException(status_code=500, detail="Ошибка при загрузке файла")
+    file_extension = os.path.splitext(file.filename)[1].lower()
+    track_id = str(uuid.uuid4())
+    source_name = file.filename
+    parsed_meta = _extract_audio_metadata(raw_bytes, source_name)
+
+    track_duration = max(0, int(duration))
+    if track_duration <= 0 and parsed_meta.get("duration"):
+        track_duration = max(0, int(parsed_meta["duration"]))
+
+    s3_key = _build_s3_track_key(current_user.id, track_id, file_extension)
+    content_type = _resolve_mime_type(source_name)
+
+    try:
+        await upload_bytes_to_s3_async(raw_bytes, s3_key, content_type=content_type)
+    except Exception as exc:
+        _track_log(
+            "upload_s3_fail",
+            track_id,
+            user_id=current_user.id,
+            error=type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Не удалось сохранить файл в облако",
+        ) from exc
+
+    cover_path = None
+    if parsed_meta.get("cover_data"):
+        cover_path = await _persist_track_cover(
+            user_id=current_user.id,
+            track_id=track_id,
+            cover_data=parsed_meta["cover_data"],
+        )
+
+    new_track = models.Track(
+        id=track_id,
+        user_id=current_user.id,
+        title=title,
+        artist=artist,
+        album=album,
+        duration=track_duration,
+        file_path=s3_key,
+        file_size=file_size,
+        cover_path=cover_path,
+        created_at=datetime.fromisoformat(created_at) if created_at else datetime.utcnow(),
+    )
+
+    db.add(new_track)
+    db.flush()
+    _rebuild_cumulative_bytes(db, current_user.id)
+    db.commit()
+    db.refresh(new_track)
+    bump_library_revision(db, current_user.id)
+    _track_log(
+        "upload_ok",
+        track_id,
+        user_id=current_user.id,
+        bytes=file_size,
+        s3_key=s3_key,
+    )
+    return new_track
 
 @router.get("/{track_id}/cover")
 async def get_track_cover(
     track_id: str,
     request: Request,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db),
 ):
     t0 = time.perf_counter()
-    track = db.query(models.Track).filter(
-        models.Track.id == track_id,
-        models.Track.user_id == current_user.id
-    ).first()
+    user_id = current_user.id
+    db = SessionLocal()
+    try:
+        track = db.query(models.Track).filter(
+            models.Track.id == track_id,
+            models.Track.user_id == user_id,
+        ).first()
+        if not track or not track.cover_path:
+            _track_log(
+                "cover_not_found",
+                track_id,
+                user_id=user_id,
+                total_ms=int((time.perf_counter() - t0) * 1000),
+            )
+            raise HTTPException(status_code=404, detail="Обложка не найдена")
+        cover_path = str(track.cover_path)
+    finally:
+        db.close()
 
-    if not track or not track.cover_path:
-        _track_log(
-            "cover_not_found",
-            track_id,
-            user_id=current_user.id,
-            total_ms=int((time.perf_counter() - t0) * 1000),
-        )
-        raise HTTPException(status_code=404, detail="Обложка не найдена")
-
-    cache_key = f"track:{current_user.id}:{track_id}"
-    cover_file = Path(track.cover_path)
+    cache_key = f"track:{user_id}:{track_id}"
+    cover_file = Path(cover_path)
     local_path = cover_file if cover_file.is_file() else None
-    s3_key = None if local_path else str(track.cover_path)
+    s3_key = None if local_path else cover_path
 
     try:
         body, content_type, source = await resolve_cover(
@@ -1409,7 +1393,7 @@ async def get_track_cover(
         _track_log(
             "cover_s3_fail",
             track_id,
-            user_id=current_user.id,
+            user_id=user_id,
             error="not_found",
             total_ms=int((time.perf_counter() - t0) * 1000),
         )
@@ -1418,7 +1402,7 @@ async def get_track_cover(
         _track_log(
             "cover_s3_fail",
             track_id,
-            user_id=current_user.id,
+            user_id=user_id,
             error=type(exc).__name__,
             total_ms=int((time.perf_counter() - t0) * 1000),
         )
@@ -1429,7 +1413,7 @@ async def get_track_cover(
         _track_log(
             "cover_not_modified",
             track_id,
-            user_id=current_user.id,
+            user_id=user_id,
             source=source,
             total_ms=int((time.perf_counter() - t0) * 1000),
         )
@@ -1439,7 +1423,7 @@ async def get_track_cover(
     _track_log(
         "cover_ok",
         track_id,
-        user_id=current_user.id,
+        user_id=user_id,
         source=source,
         bytes=len(body),
         total_ms=total_ms,
@@ -1611,51 +1595,57 @@ async def stream_track(
 async def get_track_token(
     track_id: str,
     current_user: models.User = Depends(get_current_user),
-    db: Session = Depends(get_db)
 ):
     t0 = time.perf_counter()
-    track = db.query(models.Track).filter(
-        models.Track.id == track_id,
-        models.Track.user_id == current_user.id
-    ).first()
-    
-    if not track:
-        _track_log(
-            "token_not_found",
-            track_id,
-            user_id=current_user.id,
-            total_ms=int((time.perf_counter() - t0) * 1000),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Трек не найден"
-        )
-        
-    freeze_start = time.perf_counter()
-    is_frozen = _track_is_frozen(track, current_user.storage_limit)
-    freeze_ms = int((time.perf_counter() - freeze_start) * 1000)
+    user_id = current_user.id
+    db = SessionLocal()
+    try:
+        track = db.query(models.Track).filter(
+            models.Track.id == track_id,
+            models.Track.user_id == user_id,
+        ).first()
 
-    if is_frozen:
-        _track_log(
-            "token_frozen",
-            track_id,
-            user_id=current_user.id,
-            freeze_check_ms=freeze_ms,
-            total_ms=int((time.perf_counter() - t0) * 1000),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Этот трек заморожен, так как превышен лимит хранилища. Оплатите подписку или удалите старые треки."
-        )
+        if not track:
+            _track_log(
+                "token_not_found",
+                track_id,
+                user_id=user_id,
+                total_ms=int((time.perf_counter() - t0) * 1000),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Трек не найден"
+            )
+
+        freeze_start = time.perf_counter()
+        is_frozen = _track_is_frozen(track, current_user.storage_limit)
+        freeze_ms = int((time.perf_counter() - freeze_start) * 1000)
+
+        if is_frozen:
+            _track_log(
+                "token_frozen",
+                track_id,
+                user_id=user_id,
+                freeze_check_ms=freeze_ms,
+                total_ms=int((time.perf_counter() - t0) * 1000),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Этот трек заморожен, так как превышен лимит хранилища. Оплатите подписку или удалите старые треки."
+            )
+
+        track_file_path = str(track.file_path)
+    finally:
+        db.close()
 
     token = create_stream_token(track_id)
     proxy_url = f"/api/tracks/play/{token}"
     presigned_url: str | None = None
     expires_in: int | None = None
 
-    if STREAM_PRESIGNED_ENABLED and _is_s3_track_file(str(track.file_path)):
+    if STREAM_PRESIGNED_ENABLED and _is_s3_track_file(track_file_path):
         presigned_url = await presigned_url_async(
-            str(track.file_path),
+            track_file_path,
             expiration=STREAM_PRESIGNED_TTL,
         )
         if presigned_url:
@@ -1664,7 +1654,7 @@ async def get_track_token(
     _track_log(
         "token_issued",
         track_id,
-        user_id=current_user.id,
+        user_id=user_id,
         freeze_check_ms=freeze_ms,
         presigned=bool(presigned_url),
         total_ms=int((time.perf_counter() - t0) * 1000),
@@ -1681,7 +1671,6 @@ async def play_track(
     token: str,
     request: Request,
     range: str = Header(None),
-    db: Session = Depends(get_db)
 ):
     t0 = time.perf_counter()
     try:
@@ -1693,22 +1682,28 @@ async def play_track(
         _track_log("play_invalid_token", total_ms=int((time.perf_counter() - t0) * 1000))
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    track = db.query(models.Track).filter(models.Track.id == track_id).first()
-    
-    if not track:
-        _track_log(
-            "play_not_found",
-            track_id,
-            total_ms=int((time.perf_counter() - t0) * 1000),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Трек не найден"
-        )
-    
-    file_path = Path(str(track.file_path))
+    db = SessionLocal()
+    try:
+        track = db.query(models.Track).filter(models.Track.id == track_id).first()
+        if not track:
+            _track_log(
+                "play_not_found",
+                track_id,
+                total_ms=int((time.perf_counter() - t0) * 1000),
+            )
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Трек не найден"
+            )
+        track_file_path = str(track.file_path)
+        track_file_size = track.file_size
+        track_title = track.title
+    finally:
+        db.close()
+
+    file_path = Path(track_file_path)
     if not file_path.exists():
-        file_size = track.file_size
+        file_size = track_file_size
         start_byte, end_byte = _parse_range_header(range, file_size)
         _track_log(
             "play_start",
@@ -1719,9 +1714,9 @@ async def play_track(
             file_size=file_size,
             total_ms=int((time.perf_counter() - t0) * 1000),
         )
-        filename = f"{track.title}{Path(str(track.file_path)).suffix or '.mp3'}"
+        filename = f"{track_title}{Path(track_file_path).suffix or '.mp3'}"
         return await _stream_s3_object_with_range(
-            object_key=str(track.file_path),
+            object_key=track_file_path,
             file_size=file_size,
             range_header=range,
             filename=filename,
@@ -1754,7 +1749,7 @@ async def play_track(
                 yield chunk
                 remaining -= len(chunk)
     
-    filename = f"{track.title}{file_path.suffix}"
+    filename = f"{track_title}{file_path.suffix}"
     encoded_filename = quote(filename)
     
     headers = {
@@ -1917,6 +1912,8 @@ async def create_youtube_import_job(
             await _schedule_import_job(existing.id)
             return schemas.ImportJobCreateResponse(job_id=existing.id, status=existing.status)
 
+    _ensure_import_job_capacity(db, current_user)
+
     job = models.ImportJob(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
@@ -2013,6 +2010,8 @@ async def create_direct_import_job(
         if existing:
             await _schedule_import_job(existing.id)
             return schemas.ImportJobCreateResponse(job_id=existing.id, status=existing.status)
+
+    _ensure_import_job_capacity(db, current_user)
 
     job = models.ImportJob(
         id=str(uuid.uuid4()),
@@ -2173,6 +2172,32 @@ async def cancel_direct_import_job(
         db.refresh(job)
     return _job_to_response(job, db)
 
+def _delete_s3_object_sync(object_key: str) -> None:
+    try:
+        s3_client = get_s3_client()
+        s3_client.delete_object(Bucket=S3_BUCKET_NAME, Key=object_key)
+    except Exception:
+        pass
+
+
+async def _purge_track_files_async(
+    audio_key: str | None,
+    cover_key: str | None,
+) -> None:
+    """Очистка файлов вне hot-path — иначе один worker блокирует /tracks и /token."""
+    if audio_key:
+        local_file = Path(audio_key)
+        if local_file.exists():
+            try:
+                local_file.unlink()
+            except Exception:
+                pass
+        else:
+            await asyncio.to_thread(_delete_s3_object_sync, audio_key)
+    if cover_key:
+        await asyncio.to_thread(delete_cover_from_s3, cover_key)
+
+
 @router.delete("/{track_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_track(
     track_id: str,
@@ -2184,34 +2209,25 @@ async def delete_track(
     # Если не админ, можно удалять только свои треки
     if not getattr(current_user, 'is_admin', False):
         query = query.filter(models.Track.user_id == current_user.id)
-        
+
     track = query.first()
-    
+
     if not track:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Трек не найден"
         )
-    
-    # Try to delete local file
-    file_path = Path(str(track.file_path))
-    if file_path.exists():
-        try:
-            file_path.unlink()
-        except Exception:
-            pass # Ignore deletion errors
-    else:
-        try:
-            s3_client = get_s3_client()
-            s3_client.delete_object(Bucket=S3_BUCKET_NAME, Key=str(track.file_path))
-        except Exception:
-            pass
 
+    audio_key = str(track.file_path) if track.file_path else None
+    cover_key = str(track.cover_path) if track.cover_path else None
     owner_id = track.user_id
+
     db.delete(track)
     db.flush()
     _rebuild_cumulative_bytes(db, owner_id)
     db.commit()
     bump_library_revision(db, owner_id)
+
+    background_tasks.add_task(_purge_track_files_async, audio_key, cover_key)
 
     return None

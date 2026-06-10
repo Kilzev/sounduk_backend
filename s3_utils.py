@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import time
 
 import boto3
 from botocore.config import Config
@@ -23,14 +24,34 @@ STREAM_PRESIGNED_ENABLED = (
 )
 
 S3_CONNECT_TIMEOUT = max(5, int(os.getenv("S3_CONNECT_TIMEOUT", "10")))
-S3_READ_TIMEOUT = max(30, int(os.getenv("S3_READ_TIMEOUT", "180")))
+S3_READ_TIMEOUT = max(10, int(os.getenv("S3_READ_TIMEOUT", "30")))
+S3_UPLOAD_READ_TIMEOUT = max(60, int(os.getenv("S3_UPLOAD_READ_TIMEOUT", "600")))
 S3_MAX_ATTEMPTS = max(2, int(os.getenv("S3_MAX_ATTEMPTS", "4")))
+S3_UPLOAD_MAX_ATTEMPTS = max(2, int(os.getenv("S3_UPLOAD_MAX_ATTEMPTS", "5")))
+S3_UPLOAD_RETRY_BASE_SEC = max(1, int(os.getenv("S3_UPLOAD_RETRY_BASE_SEC", "2")))
 
 S3_CLIENT_CONFIG = Config(
     connect_timeout=S3_CONNECT_TIMEOUT,
     read_timeout=S3_READ_TIMEOUT,
     retries={"max_attempts": S3_MAX_ATTEMPTS, "mode": "standard"},
 )
+
+S3_UPLOAD_CLIENT_CONFIG = Config(
+    connect_timeout=S3_CONNECT_TIMEOUT,
+    read_timeout=S3_UPLOAD_READ_TIMEOUT,
+    retries={"max_attempts": S3_MAX_ATTEMPTS, "mode": "adaptive"},
+)
+
+
+def _build_s3_client(config: Config):
+    return boto3.client(
+        's3',
+        endpoint_url=S3_ENDPOINT_URL,
+        region_name=S3_REGION_NAME,
+        aws_access_key_id=S3_ACCESS_KEY_ID,
+        aws_secret_access_key=S3_SECRET_ACCESS_KEY,
+        config=config,
+    )
 
 
 def get_s3_client():
@@ -40,14 +61,17 @@ def get_s3_client():
         S3_CLIENT_CONFIG.read_timeout,
         S3_BUCKET_NAME,
     )
-    return boto3.client(
-        's3',
-        endpoint_url=S3_ENDPOINT_URL,
-        region_name=S3_REGION_NAME,
-        aws_access_key_id=S3_ACCESS_KEY_ID,
-        aws_secret_access_key=S3_SECRET_ACCESS_KEY,
-        config=S3_CLIENT_CONFIG,
+    return _build_s3_client(S3_CLIENT_CONFIG)
+
+
+def get_s3_upload_client():
+    logger.debug(
+        "s3_upload_client create connect_timeout=%s read_timeout=%s bucket=%s",
+        S3_UPLOAD_CLIENT_CONFIG.connect_timeout,
+        S3_UPLOAD_CLIENT_CONFIG.read_timeout,
+        S3_BUCKET_NAME,
     )
+    return _build_s3_client(S3_UPLOAD_CLIENT_CONFIG)
 
 
 def generate_presigned_url(object_name, expiration=3600):
@@ -93,13 +117,50 @@ def upload_bytes_to_s3(
 ) -> None:
     from io import BytesIO
 
-    s3_client = get_s3_client()
-    s3_client.upload_fileobj(
-        BytesIO(file_bytes),
-        S3_BUCKET_NAME,
-        object_name,
-        ExtraArgs={"ContentType": content_type},
+    from boto3.s3.transfer import TransferConfig
+
+    transfer_config = TransferConfig(
+        multipart_threshold=8 * 1024 * 1024,
+        multipart_chunksize=8 * 1024 * 1024,
+        max_concurrency=2,
+        use_threads=True,
     )
+    last_error: Exception | None = None
+    for attempt in range(1, S3_UPLOAD_MAX_ATTEMPTS + 1):
+        try:
+            s3_client = get_s3_upload_client()
+            s3_client.upload_fileobj(
+                BytesIO(file_bytes),
+                S3_BUCKET_NAME,
+                object_name,
+                ExtraArgs={"ContentType": content_type},
+                Config=transfer_config,
+            )
+            if attempt > 1:
+                logger.info(
+                    "s3_upload_ok key=%s bytes=%s attempt=%s",
+                    object_name,
+                    len(file_bytes),
+                    attempt,
+                )
+            return
+        except Exception as exc:
+            last_error = exc
+            if attempt >= S3_UPLOAD_MAX_ATTEMPTS:
+                break
+            delay = min(S3_UPLOAD_RETRY_BASE_SEC * (2 ** (attempt - 1)), 30)
+            logger.warning(
+                "s3_upload_retry key=%s bytes=%s attempt=%s/%s delay=%ss error=%s",
+                object_name,
+                len(file_bytes),
+                attempt,
+                S3_UPLOAD_MAX_ATTEMPTS,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    assert last_error is not None
+    raise last_error
 
 
 async def upload_bytes_to_s3_async(
@@ -117,7 +178,7 @@ async def upload_bytes_to_s3_async(
 
 
 def upload_file_to_s3(file_obj, object_name):
-    s3_client = get_s3_client()
+    s3_client = get_s3_upload_client()
     try:
         s3_client.upload_fileobj(file_obj, S3_BUCKET_NAME, object_name)
     except Exception as e:

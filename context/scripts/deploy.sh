@@ -10,7 +10,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-SSH_HOST="root@185.76.242.73"
+SSH_HOST="root@138.249.18.60"
 SSH_KEY="${HOME}/.ssh/sounduk_cursor"
 REMOTE_PATH="/var/www/sounduk_backend"
 LOCAL_PATH="/Users/ilya/Develope/mega_sounduk/sounduk_backend"
@@ -81,7 +81,7 @@ if [ "$restart_choice" = "y" ]; then
     ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
         "pkill -f '/var/www/sounduk_backend/venv/bin/uvicorn main:app' || true && sleep 2 && cd $REMOTE_PATH && \
         source venv/bin/activate && \
-        nohup uvicorn main:app --host 127.0.0.1 --port 8000 --workers 2 >> server.log 2>&1 &"
+        systemctl restart sounduk"
     sleep 3
     echo -e "${GREEN}✅ Сервис перезагружен${NC}"
 fi
