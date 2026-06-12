@@ -26,7 +26,7 @@ _configure_app_logging()
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from api import auth, tracks, admin, users, payments, albums
+from api import auth, tracks, admin, users, payments, albums, user_settings
 from database import engine, Base
 from db_backup import upload_db_to_s3, stop_periodic_backup, run_startup_once
 from request_logging import register_request_logging
@@ -73,6 +73,7 @@ app.include_router(tracks.router, prefix="/api/tracks", tags=["Tracks"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Admin"])
 app.include_router(payments.router, prefix="/api/payments", tags=["Payments"])
 app.include_router(albums.router, prefix="/api/albums", tags=["Albums"])
+app.include_router(user_settings.router, prefix="/api/user/settings", tags=["User Settings"])
 
 @app.get("/")
 async def root():

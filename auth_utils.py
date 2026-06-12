@@ -125,3 +125,22 @@ async def get_current_admin_user(
             detail="Недостаточно прав"
         )
     return current_user
+
+
+async def get_premium_user(
+    current_user: models.User = Depends(get_current_user),
+) -> models.User:
+    """Только премиум-пользователи — для импорта с YouTube и по ссылкам."""
+    if not current_user.is_premium:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail="Импорт по ссылкам доступен только премиум-пользователям",
+        )
+    return current_user
+
+
+async def get_verified_premium_user(
+    verified_user: models.User = Depends(get_verified_user),
+    _premium: models.User = Depends(get_premium_user),
+) -> models.User:
+    return verified_user

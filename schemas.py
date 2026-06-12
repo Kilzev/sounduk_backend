@@ -277,3 +277,15 @@ class ImportJobRetryResponse(BaseModel):
     job_id: str
     status: str
     queued_items: int
+
+
+# --- User Settings (Equalizer) ---
+
+class EqualizerSettingsLoadResponse(BaseModel):
+    enabled: bool = False
+    gains: list[float] = []
+
+
+class EqualizerSettingsSaveRequest(BaseModel):
+    enabled: bool
+    gains: list[float]

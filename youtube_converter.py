@@ -16,7 +16,7 @@ from fastapi import HTTPException, status
 
 load_dotenv()
 
-YTDLP_MP3_QUALITY = (os.getenv("YOUTUBE_YTDLP_MP3_QUALITY") or "192").strip()
+YTDLP_MP3_QUALITY = (os.getenv("YOUTUBE_YTDLP_MP3_QUALITY") or "320").strip()
 YTDLP_PROXY = (os.getenv("YTDLP_PROXY") or os.getenv("HTTPS_PROXY") or "").strip()
 YTDLP_COOKIES_FILE = (os.getenv("YTDLP_COOKIES_FILE") or "").strip()
 # Медленный прокси: 5 MB при ~30 KiB/s может занять >60 с; иначе job делает 3 retry ≈ 3 мин.
@@ -43,6 +43,11 @@ def _build_ydl_opts(output_path: Path) -> dict:
                 "preferredquality": YTDLP_MP3_QUALITY,
             }
         ],
+        "postprocessor_args": {
+            "ExtractAudio+ffmpeg": [
+                "-af", "loudnorm=I=-16:TP=-1.5:LRA=11:linear=true",
+            ],
+        },
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
