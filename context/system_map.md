@@ -305,7 +305,7 @@ GET / → { "message": "Sounduk API работает!", "docs": "/docs" }
 # На STARTUP
 ✓ download_db_from_s3()          # Восстановление БД из S3
 ✓ Base.metadata.create_all()     # Создание таблиц
-✓ start_periodic_backup()        # Запуск фоновой задачи (каждый час)
+✓ start_periodic_backup()        # Запуск фоновой задачи (раз в сутки + prune >90d)
 
 # На SHUTDOWN
 ✓ stop_periodic_backup()         # Остановка задачи

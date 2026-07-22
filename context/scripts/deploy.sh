@@ -10,7 +10,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-SSH_HOST="root@138.249.18.60"
+SSH_HOST="root@178.72.184.68"
 SSH_KEY="${HOME}/.ssh/sounduk_cursor"
 REMOTE_PATH="/var/www/sounduk_backend"
 LOCAL_PATH="/Users/ilya/Develope/mega_sounduk/sounduk_backend"

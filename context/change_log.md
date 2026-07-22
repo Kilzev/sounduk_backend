@@ -1,5 +1,13 @@
 # Change Log
 
+## 2026-07-21 — Audit orphan tracks + daily DB backup
+
+- **Прод API host:** `178.72.184.68` (`emelda`), `/var/www/sounduk_backend` (deploy.sh обновлён).
+- **Audit (read-only):** `context/scripts/audit_tracks_s3.py` → 315 tracks, **150 audio_missing** (legacy `uploads/`, нет объекта и в `tracks/`). Отчёт: `context/audit_tracks_s3_2026-07-21.md`. Remediation не делали.
+- **db_backup.py:** интервал **24h** (`interval_min=1440`), prune timestamped `backups/database_*.db` старше **90 дней**; `database_latest.db` не удаляется. One-shot prune удалил **1310** старых копий.
+- **Деплой:** только `db_backup.py` (+ remote `.backup.*`), `database.db` не трогали вручную. После `systemctl restart sounduk` сработал штатный startup restore из `database_latest.db` (размер 843776, counts: tracks=315 users=14 albums=9) — метаданные на месте.
+- Smoke: `sounduk` active, `/docs` 200.
+
 ## 2026-06-08 — Миграция API на новый сервер
 
 - **Новый хост:** `138.249.18.60` (`knyzeviv.oblaka.tech`), Ubuntu 24.04, 2 GB RAM + 512 MB swap.

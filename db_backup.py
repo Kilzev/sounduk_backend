@@ -2,11 +2,10 @@
 import fcntl
 import logging
 import os
+import re
 import shutil
 import threading
-import time
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 from s3_utils import get_s3_client, S3_BUCKET_NAME
 
@@ -15,9 +14,15 @@ logger = logging.getLogger("sounduk.db_backup")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "database.db")
 S3_DB_LATEST_KEY = "backups/database_latest.db"
+S3_DB_PREFIX = "backups/"
+# Timestamped keys: backups/database_YYYYMMDD_HHMMSS.db
+_TIMESTAMPED_DB_RE = re.compile(
+    r"^backups/database_(\d{8})_(\d{6})\.db$"
+)
 STARTUP_LOCK_PATH = os.path.join(BASE_DIR, ".startup.lock")
 
-BACKUP_INTERVAL_SECONDS = 60 * 30  # каждые 30 минут
+BACKUP_INTERVAL_SECONDS = 60 * 60 * 24  # раз в сутки
+BACKUP_RETENTION_DAYS = 90
 
 _backup_thread = None
 _stop_event = threading.Event()
@@ -57,8 +62,54 @@ def run_startup_once() -> bool:
         return True
 
 
+def prune_old_backups(days: int = BACKUP_RETENTION_DAYS) -> int:
+    """
+    Удаляет timestamped бэкапы старше `days` дней.
+    Никогда не трогает backups/database_latest.db.
+    Возвращает число удалённых объектов. Ошибки логирует, не пробрасывает.
+    """
+    deleted = 0
+    try:
+        s3 = get_s3_client()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        paginator = s3.get_paginator("list_objects_v2")
+        to_delete: list[str] = []
+
+        for page in paginator.paginate(Bucket=S3_BUCKET_NAME, Prefix=S3_DB_PREFIX):
+            for obj in page.get("Contents") or []:
+                key = obj.get("Key") or ""
+                if key == S3_DB_LATEST_KEY:
+                    continue
+                if not _TIMESTAMPED_DB_RE.match(key):
+                    continue
+                last_modified = obj.get("LastModified")
+                if last_modified is None:
+                    continue
+                if last_modified.tzinfo is None:
+                    last_modified = last_modified.replace(tzinfo=timezone.utc)
+                if last_modified < cutoff:
+                    to_delete.append(key)
+
+        for key in to_delete:
+            try:
+                s3.delete_object(Bucket=S3_BUCKET_NAME, Key=key)
+                deleted += 1
+            except Exception as e:
+                logger.error("prune delete failed key=%s error=%s", key, e)
+
+        logger.info(
+            "prune old backups done retention_days=%s deleted=%s candidates=%s",
+            days,
+            deleted,
+            len(to_delete),
+        )
+    except Exception as e:
+        logger.error("prune old backups failed error=%s", e)
+    return deleted
+
+
 def upload_db_to_s3():
-    """Загружает текущую БД на S3 с версионированием"""
+    """Загружает текущую БД на S3 с версионированием и prune старых копий."""
     if not os.path.exists(DB_PATH):
         logger.warning("database.db not found, skip backup")
         return False
@@ -81,6 +132,8 @@ def upload_db_to_s3():
 
         size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
         logger.info("db uploaded to S3 key=%s size_mb=%.1f", timestamped_key, size_mb)
+
+        prune_old_backups(BACKUP_RETENTION_DAYS)
         return True
 
     except Exception as e:
@@ -100,13 +153,12 @@ def download_db_from_s3():
         try:
             s3_obj = s3.head_object(Bucket=S3_BUCKET_NAME, Key=S3_DB_LATEST_KEY)
             s3_modified = s3_obj.get("LastModified")
-        except:
+        except Exception:
             logger.warning("S3 backup not found, using local db")
             return False
 
         # Если локальной БД нет или она старше S3 версии - скачиваем
         local_exists = os.path.exists(DB_PATH)
-        local_modified = None
 
         if local_exists:
             local_modified = datetime.fromtimestamp(os.path.getmtime(DB_PATH))
@@ -147,7 +199,11 @@ def start_periodic_backup():
     _backup_thread = threading.Thread(target=_backup_loop, daemon=True)
     _backup_thread.start()
     interval_min = BACKUP_INTERVAL_SECONDS // 60
-    logger.info("periodic backup started interval_min=%s", interval_min)
+    logger.info(
+        "periodic backup started interval_min=%s retention_days=%s",
+        interval_min,
+        BACKUP_RETENTION_DAYS,
+    )
 
 
 def stop_periodic_backup():
