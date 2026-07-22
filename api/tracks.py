@@ -2,6 +2,7 @@
 import email
 import logging
 import time
+import base64
 from urllib.parse import quote, unquote
 from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Form, Request, Header, BackgroundTasks
 from fastapi.responses import StreamingResponse, Response, JSONResponse
@@ -1797,6 +1798,26 @@ async def update_track(
         delete_cover_from_s3(track.cover_path)
         invalidate_cover_cache(f"track:{current_user.id}:{track_id}")
         track.cover_path = None
+    elif payload.cover_data:
+        try:
+            cover_bytes = base64.b64decode(payload.cover_data, validate=True)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="cover_data должен быть валидной base64-строкой",
+            )
+        if not cover_bytes:
+            raise HTTPException(status_code=400, detail="cover_data пуст")
+        if len(cover_bytes) > 2 * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail="Обложка превышает максимальный размер 2 МБ",
+            )
+        delete_cover_from_s3(track.cover_path)
+        invalidate_cover_cache(f"track:{current_user.id}:{track_id}")
+        track.cover_path = _upload_cover_to_s3(
+            cover_bytes, current_user.id, track.id
+        )
     elif payload.cover_url:
         cover_bytes = await _download_cover_by_url(payload.cover_url.strip())
         delete_cover_from_s3(track.cover_path)

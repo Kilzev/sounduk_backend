@@ -135,6 +135,8 @@ class TrackUpdateRequest(BaseModel):
     title: Optional[str] = None
     artist: Optional[str] = None
     cover_url: Optional[str] = None
+    # base64-encoded image bytes — preferred over cover_url (client already downloaded)
+    cover_data: Optional[str] = None
     clear_cover: bool = False
 
 class TrackResponse(BaseModel):
