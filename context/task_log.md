@@ -1,10 +1,24 @@
 # Журнал задач и изменений API
 
-**Последнее обновление:** 2026-07-21
+**Последнее обновление:** 2026-07-23
 
 ---
 
 ## 📝 Статус текущих работ
+
+### ✅ ЗАВЕРШЕНО (2026-07-23): Merge live DB + S3 latest
+
+- ✅ Union-merge: live base + missing users/tracks/albums из S3
+- ✅ Итог на проде: 13 users / 442 tracks / 10 albums; Soan; Ilya 264 tracks
+- ✅ `db_backup.download_db_from_s3`: UTC mtime; не затирает более новый local
+- Запись: [`change_log.md`](./change_log.md)
+
+### ✅ ЗАВЕРШЕНО (2026-07-22): Hotfix `cover_data` на PATCH track (прод)
+
+- ✅ `TrackUpdateRequest.cover_data` + сохранение cover в `update_track` на `178.72.184.68`
+- ✅ Минимальный деплой без premium-import gating (избежать зависимости от незадеплоенного `auth_utils`)
+- ⚠️ Клиентские обложки, выставленные до hotfix, нужно re-apply
+- Запись: [`change_log.md`](./change_log.md)
 
 ### ✅ ЗАВЕРШЕНО (2026-07-21): Read-only audit tracks vs S3 + суточный бэкап БД
 

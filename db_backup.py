@@ -144,36 +144,109 @@ def upload_db_to_s3():
             os.remove(tmp_path)
 
 
+def _file_sha256(path: str) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def download_db_from_s3():
-    """Скачивает последнюю БД с S3 при первом запуске приложения"""
+    """Скачивает последнюю БД с S3 при старте, если локальная старше или отсутствует.
+
+    Если локальный файл новее S3 по UTC mtime, но sha отличается — оставляем local
+    (не затираем свежие данные старым бэкапом).
+    """
     try:
         s3 = get_s3_client()
 
-        # Проверяем есть ли бэкап на S3
         try:
             s3_obj = s3.head_object(Bucket=S3_BUCKET_NAME, Key=S3_DB_LATEST_KEY)
             s3_modified = s3_obj.get("LastModified")
+            s3_size = int(s3_obj.get("ContentLength") or 0)
+            s3_etag = (s3_obj.get("ETag") or "").strip('"')
         except Exception:
             logger.warning("S3 backup not found, using local db")
             return False
 
-        # Если локальной БД нет или она старше S3 версии - скачиваем
         local_exists = os.path.exists(DB_PATH)
 
-        if local_exists:
-            local_modified = datetime.fromtimestamp(os.path.getmtime(DB_PATH))
-            local_modified = local_modified.replace(tzinfo=None)
-            s3_modified_naive = s3_modified.replace(tzinfo=None)
+        if not local_exists:
+            s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, DB_PATH)
+            size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+            logger.info("db restored from S3 (no local) size_mb=%.1f", size_mb)
+            return True
 
-            if local_modified >= s3_modified_naive:
-                logger.info("local db is up to date, skip S3 restore")
+        local_modified = datetime.fromtimestamp(
+            os.path.getmtime(DB_PATH), tz=timezone.utc
+        )
+        if s3_modified.tzinfo is None:
+            s3_modified_utc = s3_modified.replace(tzinfo=timezone.utc)
+        else:
+            s3_modified_utc = s3_modified.astimezone(timezone.utc)
+
+        local_size = os.path.getsize(DB_PATH)
+
+        # Local strictly newer → never clobber with older S3 snapshot.
+        if local_modified > s3_modified_utc:
+            logger.info(
+                "local db newer than S3 (utc); keep local local=%s s3=%s etag=%s",
+                local_modified.isoformat(),
+                s3_modified_utc.isoformat(),
+                s3_etag,
+            )
+            return False
+
+        # Local older → restore from S3.
+        if local_modified < s3_modified_utc:
+            s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, DB_PATH)
+            size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+            logger.info(
+                "db restored from S3 (local older) size_mb=%.1f local=%s s3=%s",
+                size_mb,
+                local_modified.isoformat(),
+                s3_modified_utc.isoformat(),
+            )
+            return True
+
+        # Same mtime second-resolution / equal: compare content.
+        if local_size != s3_size:
+            s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, DB_PATH)
+            size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+            logger.info(
+                "db restored from S3 (same mtime, size differs) size_mb=%.1f",
+                size_mb,
+            )
+            return True
+
+        tmp_check = DB_PATH + ".restore_check"
+        try:
+            s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, tmp_check)
+            local_sha = _file_sha256(DB_PATH)
+            s3_sha = _file_sha256(tmp_check)
+            if local_sha == s3_sha:
+                logger.info(
+                    "local db up to date (utc mtime+sha), skip S3 restore etag=%s",
+                    s3_etag,
+                )
                 return False
-
-        # Скачиваем с S3
-        s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, DB_PATH)
-        size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
-        logger.info("db restored from S3 size_mb=%.1f", size_mb)
-        return True
+            # Equal mtime, different sha: prefer S3 as canonical backup channel.
+            os.replace(tmp_check, DB_PATH)
+            size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+            logger.warning(
+                "db restored from S3 (equal mtime, sha differs) size_mb=%.1f",
+                size_mb,
+            )
+            return True
+        finally:
+            if os.path.exists(tmp_check):
+                try:
+                    os.remove(tmp_check)
+                except OSError:
+                    pass
 
     except Exception as e:
         logger.error("db restore from S3 failed error=%s", e)

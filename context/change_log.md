@@ -1,5 +1,28 @@
 # Change Log
 
+## 2026-07-23 — Merge live SQLite + S3 `database_latest`
+
+- **Проблема:** live `database.db` (12 users / 158 tracks) разошёлся с S3 latest (13 users / 343 tracks). У Ilyи в live были свежие треки (до 2026-07-23), в S3 — другая библиотека + user **Soan**; overlap только 59 треков (knyaz/akmil).
+- **Действие:** stop `sounduk` → snapshot live + S3 → `merge_sqlite_dbs.py` (base=live, INSERT missing PK из S3) → swap → upload merged как `database_latest`.
+- **Скрипт:** `context/scripts/merge_sqlite_dbs.py`, runner `context/scripts/run_db_merge_prod.sh`.
+- **Локальные снапшоты на сервере:** `/var/www/sounduk_backend/backups_local/database_*_20260723_173247.db`; S3 premerge key `backups/database_premerge_20260723_173247.db`.
+- **Итог:** users=13, tracks=442, albums=10, Ilya tracks=264 (~1.5 GB metadata), Soan present.
+- **Инцидент:** первый старт после merge затёр БД старым S3 из‑за ошибочного «sha differs → restore». Исправлено: если local **новее** S3 по UTC mtime — всегда keep local. Re-apply merged + re-upload latest.
+- **db_backup.py:** UTC mtime compare + sha check; не затирает более новый local.
+
+## 2026-07-23 — Albums LWW `updatedAt` (прод)
+
+- **Деплой:** только `api/albums.py` → `178.72.184.68:/var/www/sounduk_backend`, `systemctl restart sounduk`.
+- **Поведение:** POST/PUT принимают клиентский `updatedAt`; PUT со старым timestamp не перетирает альбом (soft reject → текущий `AlbumOut`).
+- Smoke: `sounduk` active, `/docs` 200. Бэкап: `api/albums.py.bak.*`.
+
+## 2026-07-22 — Hotfix: `cover_data` в PATCH track (прод)
+
+- **Проблема:** клиент слал `cover_data` (base64) в PATCH, на проде поля не было в `TrackUpdateRequest` → Pydantic silently drop → HTTP 200, `cover_path` оставался `None`. Обложки с телефона не доезжали до веба.
+- **Деплой (минимальный) на `178.72.184.68`:** `schemas.py` + ветка `cover_data` в `api/tracks.py` (`import base64`). **Не** выкатывали premium-gating YouTube import без полного `auth_utils.py` (сломало бы startup).
+- **Клиент:** обложки, выставленные до hotfix, нужно поставить заново.
+- **Урок:** после деплоя сверять, что продовыe Pydantic-схемы содержат новые поля request body.
+
 ## 2026-07-21 — Audit orphan tracks + daily DB backup
 
 - **Прод API host:** `178.72.184.68` (`emelda`), `/var/www/sounduk_backend` (deploy.sh обновлён).
