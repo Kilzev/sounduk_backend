@@ -18,11 +18,17 @@ load_dotenv()
 
 YTDLP_MP3_QUALITY = (os.getenv("YOUTUBE_YTDLP_MP3_QUALITY") or "320").strip()
 YTDLP_PROXY = (os.getenv("YTDLP_PROXY") or os.getenv("HTTPS_PROXY") or "").strip()
+# socks5:// резолвит DNS локально (РФ) → чаще geo/age проблемы; socks5h:// — DNS через прокси.
+if YTDLP_PROXY.startswith("socks5://") and not YTDLP_PROXY.startswith("socks5h://"):
+    YTDLP_PROXY = "socks5h://" + YTDLP_PROXY[len("socks5://") :]
 YTDLP_COOKIES_FILE = (os.getenv("YTDLP_COOKIES_FILE") or "").strip()
 # Медленный прокси: 5 MB при ~30 KiB/s может занять >60 с; иначе job делает 3 retry ≈ 3 мин.
 YTDLP_SOCKET_TIMEOUT = max(30, int(os.getenv("YTDLP_SOCKET_TIMEOUT", "180")))
 TMP_DIR = Path(os.getenv("YOUTUBE_TMP_DIR") or "uploads/youtube_tmp")
 TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+# Больше клиентов = выше шанс обойти лёгкие ограничения; age-gate всё равно нужен cookies.
+_YT_PLAYER_CLIENTS = ["android", "ios", "tv_embedded", "web"]
 
 
 def _ffmpeg_location() -> str | None:
@@ -52,10 +58,9 @@ def _build_ydl_opts(output_path: Path) -> dict:
         "no_warnings": True,
         "noprogress": True,
         "socket_timeout": YTDLP_SOCKET_TIMEOUT,
-        "retries": 2,
-        "fragment_retries": 2,
-        # Меньше блокировок с датацентровых IP (в т.ч. РФ)
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        "retries": 3,
+        "fragment_retries": 3,
+        "extractor_args": {"youtube": {"player_client": list(_YT_PLAYER_CLIENTS)}},
     }
     if YTDLP_PROXY:
         opts["proxy"] = YTDLP_PROXY
@@ -167,7 +172,7 @@ def _flat_playlist_ydl_opts() -> dict:
         "no_warnings": True,
         "extract_flat": "in_playlist",
         "skip_download": True,
-        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+        "extractor_args": {"youtube": {"player_client": list(_YT_PLAYER_CLIENTS)}},
     }
     if YTDLP_PROXY:
         opts["proxy"] = YTDLP_PROXY

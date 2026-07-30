@@ -56,6 +56,26 @@ class AlbumUpdate(BaseModel):
     trackIds: Optional[list[str]] = None
     coverArt: Optional[str] = None  # base64 или пустая строка для очистки
     cover_url: Optional[str] = None  # URL → скачать и сохранить в S3
+    updatedAt: Optional[str] = None  # ISO 8601 — LWW: клиент новее побеждает
+
+
+def _parse_client_updated_at(value: Optional[str]) -> Optional[datetime]:
+    """Parse client ISO timestamp to naive UTC; None if missing/invalid."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            from datetime import timezone
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except ValueError:
+        return None
 
 
 class AlbumOut(BaseModel):
@@ -281,6 +301,8 @@ async def create_album(
         )
 
     now = datetime.utcnow()
+    client_updated = _parse_client_updated_at(album_in.updatedAt)
+    client_created = _parse_client_updated_at(album_in.createdAt)
 
     db_album = models.Album(
         id=album_in.id,
@@ -290,8 +312,8 @@ async def create_album(
         cover_art=None,
         cover_path=None,
         track_ids=_normalize_track_ids(album_in.trackIds),
-        created_at=now,
-        updated_at=now,
+        created_at=client_created or now,
+        updated_at=client_updated or now,
     )
     try:
         db.add(db_album)
@@ -342,6 +364,22 @@ async def update_album(
 
     # Partial update — обновляем только переданные поля
     data = album_update.model_dump(exclude_unset=True)
+    client_updated = _parse_client_updated_at(data.pop("updatedAt", None))
+
+    # LWW: stale client write must not overwrite a newer server album.
+    if client_updated is not None and album.updated_at is not None:
+        server_ts = album.updated_at
+        if getattr(server_ts, "tzinfo", None) is not None:
+            from datetime import timezone
+            server_ts = server_ts.astimezone(timezone.utc).replace(tzinfo=None)
+        if client_updated < server_ts:
+            logger.info(
+                "update_album LWW reject album_id=%s client=%s server=%s",
+                album_id,
+                client_updated.isoformat(),
+                server_ts.isoformat(),
+            )
+            return _to_out(album)
 
     if "title" in data:
         album.title = data["title"]
@@ -364,7 +402,7 @@ async def update_album(
                 cover_art_b64=data["coverArt"],
             )
 
-        album.updated_at = datetime.utcnow()
+        album.updated_at = client_updated or datetime.utcnow()
         db.commit()
         db.refresh(album)
     except HTTPException:

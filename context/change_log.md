@@ -1,5 +1,19 @@
 # Change Log
 
+## 2026-07-23 — YouTube import: устойчивость + hotfix прод
+
+- **Симптом:** часть импортов «ломается» / job зависает; age-gate и geo-errors.
+- **Сейчас на проде:** `YTDLP_PROXY` → `socks5h://`; yt-dlp **2026.7.4**; orphan `running` items сброшены; `sounduk-import` restarted; smoke `eVTXPUF4Oz4` OK.
+- **Код:** auto `socks5→socks5h`; больше `player_client`; reclaim stale running; cancel чистит running items; non-retryable для country/age.
+- **Остаётся вручную:** `YTDLP_COOKIES_FILE` (Netscape cookies) для age-restricted.
+
+## 2026-07-23 — Wipe cloud library for knyzeviv@gmail.com (Ilya)
+
+- **Причина:** после merge метаданные треков без объектов в S3 → `NoSuchKey` на стриме.
+- **Действие:** admin `_cleanup_user_tracks_data` user_id=6 — удалены 264 DB tracks + 398 S3 keys; удалены 9 albums; `library_revision` → 307; upload `database_latest`.
+- **Снапшот:** `/var/www/sounduk_backend/backups_local/database_pre_ilya_cloud_wipe_20260723_173935.db`
+- **Итог:** tracks=0, albums=0, storage_used=0 для Ilya.
+
 ## 2026-07-23 — Merge live SQLite + S3 `database_latest`
 
 - **Проблема:** live `database.db` (12 users / 158 tracks) разошёлся с S3 latest (13 users / 343 tracks). У Ilyи в live были свежие треки (до 2026-07-23), в S3 — другая библиотека + user **Soan**; overlap только 59 треков (knyaz/akmil).

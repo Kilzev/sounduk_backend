@@ -1,7 +1,7 @@
 # schemas.py - Схемы для валидации данных
-from pydantic import BaseModel, EmailStr
+from pydantic import model_validator, BaseModel, EmailStr
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 class UserCreate(BaseModel):
     username: str
@@ -152,6 +152,29 @@ class TrackResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _has_cover_from_path(cls, data: Any):
+        """ORM Track has cover_path, not has_cover — map it for upload/list."""
+        if data is None or isinstance(data, dict):
+            if isinstance(data, dict) and "has_cover" not in data:
+                cover_path = data.get("cover_path")
+                if cover_path is not None:
+                    data = {**data, "has_cover": bool(cover_path)}
+            return data
+        cover_path = getattr(data, "cover_path", None)
+        return {
+            "id": getattr(data, "id", None),
+            "title": getattr(data, "title", None),
+            "artist": getattr(data, "artist", None),
+            "album": getattr(data, "album", None),
+            "duration": getattr(data, "duration", None),
+            "file_size": getattr(data, "file_size", None),
+            "created_at": getattr(data, "created_at", None),
+            "is_frozen": getattr(data, "is_frozen", False) or False,
+            "has_cover": bool(cover_path),
+        }
 
 class TracksList(BaseModel):
     tracks: list[TrackResponse]

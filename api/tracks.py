@@ -18,7 +18,7 @@ import uuid
 import os
 from pathlib import Path
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from typing import Any
 import httpx
@@ -107,7 +107,7 @@ def _parse_track_cursor(cursor: str) -> tuple[datetime, str]:
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
-YOUTUBE_IMPORT_MAX_ITEMS = int(os.getenv("YOUTUBE_IMPORT_MAX_ITEMS", "100"))
+YOUTUBE_IMPORT_MAX_ITEMS = int(os.getenv("YOUTUBE_IMPORT_MAX_ITEMS", "200"))
 _YOUTUBE_VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{11}$")
 _YOUTUBE_PLAYLIST_VIDEO_ID_RE = re.compile(r'"videoId":"([a-zA-Z0-9_-]{11})"')
 JOB_ITEM_AUTO_RETRIES = max(2, int(os.getenv("JOB_ITEM_AUTO_RETRIES", "4")))
@@ -145,11 +145,62 @@ def _is_non_retryable_import_error(message: str) -> bool:
         "video unavailable",
         "sign in to confirm",
         "age-restricted",
+        "inappropriate for some users",
         "this video is not available",
+        "not made this video available in your country",
+        "the uploader has not made this video available",
         "ожидается ссылка",
         "нет источника аудио",
     )
     return any(marker in lowered for marker in markers)
+
+
+IMPORT_ITEM_STALE_RUNNING_MINUTES = max(
+    5, int(os.getenv("IMPORT_ITEM_STALE_RUNNING_MINUTES", "45"))
+)
+
+
+def _reclaim_stale_running_items(db: Session, job_id: str | None = None) -> int:
+    """Сбрасывает зависшие running-items (после cancel/crash worker)."""
+    cutoff = datetime.utcnow() - timedelta(minutes=IMPORT_ITEM_STALE_RUNNING_MINUTES)
+    q = db.query(models.ImportJobItem).filter(
+        models.ImportJobItem.status == "running",
+        models.ImportJobItem.updated_at < cutoff,
+    )
+    if job_id:
+        q = q.filter(models.ImportJobItem.job_id == job_id)
+    stale = q.all()
+    if not stale:
+        return 0
+    for item in stale:
+        job = db.query(models.ImportJob).filter(models.ImportJob.id == item.job_id).first()
+        if job and job.status in {"cancelled", "completed", "completed_with_errors", "failed"}:
+            item.status = "failed"
+            item.error_message = (item.error_message or "stale_running_after_job_end")[:500]
+        else:
+            item.status = "pending"
+            item.error_message = None
+        item.updated_at = datetime.utcnow()
+    db.commit()
+    return len(stale)
+
+
+def _fail_running_items_for_job(db: Session, job_id: str, reason: str) -> None:
+    items = (
+        db.query(models.ImportJobItem)
+        .filter(
+            models.ImportJobItem.job_id == job_id,
+            models.ImportJobItem.status.in_(["running", "pending"]),
+        )
+        .all()
+    )
+    for item in items:
+        item.status = "failed" if item.status == "running" else "skipped"
+        if item.status == "failed":
+            item.error_message = reason[:500]
+        else:
+            item.error_message = "cancelled"
+        item.updated_at = datetime.utcnow()
 
 # Плейлист: волнами по N треков (следующие N только после завершения текущей волны).
 YOUTUBE_IMPORT_BATCH_SIZE = max(1, min(int(os.getenv("YOUTUBE_IMPORT_BATCH_SIZE", "10")), 10))
@@ -285,13 +336,17 @@ async def _schedule_import_job(job_id: str) -> None:
 async def run_import_worker_loop() -> None:
     """Отдельный процесс: опрашивает БД и гоняет yt-dlp без нагрузки на API worker."""
     tracks_logger.info(
-        "import_worker started batch=%s concurrency=%s",
+        "import_worker started batch=%s concurrency=%s stale_min=%s",
         YOUTUBE_IMPORT_BATCH_SIZE,
         YOUTUBE_IMPORT_CONCURRENCY,
+        IMPORT_ITEM_STALE_RUNNING_MINUTES,
     )
     while True:
         db = SessionLocal()
         try:
+            reclaimed = _reclaim_stale_running_items(db)
+            if reclaimed:
+                tracks_logger.warning("reclaimed_stale_running_items count=%s", reclaimed)
             jobs = (
                 db.query(models.ImportJob)
                 .filter(models.ImportJob.status.in_(["pending", "running"]))
@@ -414,6 +469,7 @@ async def _run_import_job(job_id: str) -> None:
             job.started_at = datetime.utcnow()
         job.status = "running"
         db.commit()
+        _reclaim_stale_running_items(db, job_id)
 
         async def _run_item(item_id: int) -> str | None:
             async with _import_slot_semaphore:
@@ -539,7 +595,31 @@ def _extract_playlist_video_ids_from_html(html: str) -> list[str]:
 
 
 async def _scrape_youtube_playlist_video_ids(list_id: str) -> list[str]:
+    """Полный список video id плейлиста.
+
+    HTML-страница YouTube часто отдаёт только первую пачку (~100), поэтому
+    сначала yt-dlp flat-playlist, HTML — только fallback.
+    """
     playlist_url = f"https://www.youtube.com/playlist?list={quote(list_id, safe='')}"
+
+    ytdlp_error: Exception | None = None
+    try:
+        watch_urls = await asyncio.to_thread(expand_playlist_watch_urls_sync, playlist_url)
+        video_ids: list[str] = []
+        seen: set[str] = set()
+        for url in watch_urls:
+            if "v=" not in url:
+                continue
+            video_id = url.split("v=")[-1].split("&")[0]
+            if not _YOUTUBE_VIDEO_ID_RE.match(video_id) or video_id in seen:
+                continue
+            seen.add(video_id)
+            video_ids.append(video_id)
+        if video_ids:
+            return video_ids
+    except Exception as exc:
+        ytdlp_error = exc
+
     headers = {
         "Accept": "text/html,application/xhtml+xml,*/*",
         "User-Agent": "Mozilla/5.0 (compatible; sounduk-backend/1.0)",
@@ -549,14 +629,19 @@ async def _scrape_youtube_playlist_video_ids(list_id: str) -> list[str]:
             response = await client.get(playlist_url, headers=headers)
             response.raise_for_status()
             video_ids = _extract_playlist_video_ids_from_html(response.text)
+            if video_ids:
+                return video_ids
     except httpx.HTTPError:
-        video_ids = []
+        pass
 
-    if video_ids:
-        return video_ids
-
-    watch_urls = await asyncio.to_thread(expand_playlist_watch_urls_sync, playlist_url)
-    return [url.split("v=")[-1].split("&")[0] for url in watch_urls if "v=" in url]
+    if isinstance(ytdlp_error, HTTPException):
+        raise ytdlp_error
+    if ytdlp_error is not None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Не удалось получить список видео плейлиста: {ytdlp_error}",
+        ) from ytdlp_error
+    return []
 
 
 async def _resolve_single_youtube_watch_url(youtube_url: str) -> str:
@@ -2189,6 +2274,8 @@ async def cancel_direct_import_job(
     if job.status not in {"completed", "completed_with_errors", "failed", "cancelled"}:
         job.status = "cancelled"
         job.finished_at = datetime.utcnow()
+        _fail_running_items_for_job(db, job.id, "cancelled_by_user")
+        _refresh_job_counters(db, job)
         db.commit()
         db.refresh(job)
     return _job_to_response(job, db)

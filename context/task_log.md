@@ -6,6 +6,12 @@
 
 ## 📝 Статус текущих работ
 
+### ✅ ЗАВЕРШЕНО (2026-07-23): Wipe cloud tracks Ilya (knyzeviv@gmail.com)
+
+- ✅ Удалены все 264 cloud tracks + S3 keys + 9 albums (user_id=6)
+- ✅ library_revision=307; БД залита в S3 latest
+- Причина: NoSuchKey после merge метаданных без файлов
+
 ### ✅ ЗАВЕРШЕНО (2026-07-23): Merge live DB + S3 latest
 
 - ✅ Union-merge: live base + missing users/tracks/albums из S3
