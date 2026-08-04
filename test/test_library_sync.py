@@ -97,3 +97,40 @@ def test_upload_track_bumps_revision(client):
     assert tracks.status_code == 200
     assert tracks.headers.get("X-Library-Revision") == str(after)
     assert tracks.json()["total"] == 1
+
+
+def test_get_tracks_default_limit_and_cursor(client):
+    """GET /api/tracks always pages (default limit=50); never dumps full library."""
+    token = register_and_login(client, "lib_page_tracks")
+    headers = _auth(token)
+
+    # Seed > default page size
+    for i in range(55):
+        mp3_header = b"ID3" + b"\x00" * 100
+        files = {"file": (f"t{i}.mp3", io.BytesIO(mp3_header), "audio/mpeg")}
+        data = {
+            "title": f"Paged {i}",
+            "artist": "Pager",
+            "duration": "10",
+        }
+        r = client.post("/api/tracks/upload", files=files, data=data, headers=headers)
+        assert r.status_code in (200, 201), r.text
+
+    r = client.get("/api/tracks", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] >= 55
+    assert len(body["tracks"]) == 50
+    assert body["has_more"] is True
+    assert body.get("next_cursor")
+
+    r2 = client.get(
+        "/api/tracks",
+        params={"cursor": body["next_cursor"], "limit": 50},
+        headers=headers,
+    )
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert len(body2["tracks"]) >= 5
+    ids = {t["id"] for t in body["tracks"]} | {t["id"] for t in body2["tracks"]}
+    assert len(ids) >= 55

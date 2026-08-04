@@ -32,6 +32,9 @@ class User(Base):
     payments: Mapped[List["Payment"]] = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
     albums: Mapped[List["Album"]] = relationship("Album", back_populates="owner", cascade="all, delete-orphan")
     import_jobs: Mapped[List["ImportJob"]] = relationship("ImportJob", back_populates="owner", cascade="all, delete-orphan")
+    radio_stations: Mapped[List["UserRadioStation"]] = relationship(
+        "UserRadioStation", back_populates="owner", cascade="all, delete-orphan"
+    )
 
     @property
     def storage_used(self) -> int:
@@ -157,4 +160,37 @@ class ImportJobItem(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
     job: Mapped["ImportJob"] = relationship("ImportJob", back_populates="items")
+
+
+class RadioStation(Base):
+    """Глобальный каталог интернет-радиостанций (управляется администратором)."""
+    __tablename__ = "radio_stations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    stream_url: Mapped[str] = mapped_column(String, nullable=False)
+    genre: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    website: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
+class UserRadioStation(Base):
+    """Пользовательские радиостанции — привязаны к аккаунту (cascade при удалении User)."""
+    __tablename__ = "user_radio_stations"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    stream_url: Mapped[str] = mapped_column(String, nullable=False)
+    genre: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    website: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+    owner: Mapped["User"] = relationship("User", back_populates="radio_stations")
 

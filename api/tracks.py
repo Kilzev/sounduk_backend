@@ -1519,7 +1519,7 @@ async def get_track_cover(
 @router.get("")
 async def get_tracks(
     since_revision: int | None = Query(None, alias="since_revision"),
-    limit: int | None = Query(None, ge=1, le=200),
+    limit: int = Query(50, ge=1, le=200),
     cursor: str | None = Query(None),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -1569,19 +1569,11 @@ async def get_tracks(
 
     has_more = False
     next_cursor: str | None = None
-    if limit is not None:
-        tracks = query.limit(limit + 1).all()
-        if len(tracks) > limit:
-            has_more = True
-            tracks = tracks[:limit]
-            next_cursor = _make_track_cursor(tracks[-1])
-    else:
-        tracks_logger.warning(
-            "list_tracks_no_limit user_id=%s total=%s",
-            current_user.id,
-            total_count,
-        )
-        tracks = query.all()
+    tracks = query.limit(limit + 1).all()
+    if len(tracks) > limit:
+        has_more = True
+        tracks = tracks[:limit]
+        next_cursor = _make_track_cursor(tracks[-1])
 
     result_tracks = []
     for track in tracks:
