@@ -18,6 +18,14 @@ router = APIRouter()
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "your_shop_id")
 YOOKASSA_SECRET_KEY = os.getenv("YOOKASSA_SECRET_KEY", "your_secret_key")
 
+# Dev-only: mock payment + YooKassa auth-fail fallbacks. Default off for prod.
+def _payment_mock_enabled() -> bool:
+    return os.getenv("ENABLE_PAYMENT_MOCK", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
 Configuration.account_id = YOOKASSA_SHOP_ID
 Configuration.secret_key = YOOKASSA_SECRET_KEY
 
@@ -122,9 +130,12 @@ async def create_payment(
 
     except Exception as e:
         print(f"YooKassa Error: {e}")
-        # Для удобства разработки, если ключи не заданы, возвращаем заглушку
         error_str = str(e)
-        if "Authentication failed" in error_str or "401" in error_str or "invalid_credentials" in error_str:
+        if _payment_mock_enabled() and (
+            "Authentication failed" in error_str
+            or "401" in error_str
+            or "invalid_credentials" in error_str
+        ):
              # MOCK RESPONSE FOR DEV WITHOUT KEYS
              fake_id = str(uuid.uuid4())
              db_payment = models.Payment(
@@ -176,17 +187,18 @@ async def check_payment_status(
 
     except Exception as e:
         print(f"Check status error: {e}")
-        # MOCK FOR DEV
         error_str = str(e)
-        if "Authentication failed" in error_str or "401" in error_str or "invalid_credentials" in error_str:
-             # Simulating success after some time? Let's just return pending or simulated success
-             # For dev purposes, if we hit check status on a dev ID, let's mark it success
+        if _payment_mock_enabled() and (
+            "Authentication failed" in error_str
+            or "401" in error_str
+            or "invalid_credentials" in error_str
+        ):
              if db_payment.status == "pending":
                   db_payment.status = "succeeded"
                   db.commit()
                   grant_premium_access(db, current_user, db_payment.product_id)
                   return schemas.PaymentStatusResponse(status="succeeded")
-             
+
         return schemas.PaymentStatusResponse(status=db_payment.status)
 
 
@@ -238,6 +250,11 @@ async def mock_payment_legacy(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    if not _payment_mock_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found",
+        )
     grant_premium_access(db, current_user, payment.product_id)
     return schemas.PaymentResponse(
         is_premium=True,

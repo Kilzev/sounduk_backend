@@ -1,5 +1,33 @@
 # Change Log
 
+## 2026-08-05 — Restore fuller DB (Ilya ~367 tracks)
+
+- User reported Ilya ~400 tracks; S3 max found: `backups/database_20260804_122608.db` → **Ilya=367**, total **547**, users 14, albums 8.
+- Replaced live DB; pre-copy `database.db.pre_restore_ilya400_20260805_123156`.
+- migrate_albums.py + password reset `kny_iv@mail.ru` → `d1k2u3c4SS!!`.
+- Uploaded restored DB to S3 latest via `upload_db_to_s3` (avoid clobber on restart).
+- Smoke: login/me 200, docs 200, service active.
+
+## 2026-08-05 — Restore DB from S3 + password reset
+
+- Live DB had **203** tracks (truncated). Restored `backups/database_latest.db` from Selectel → **343** tracks / 13 users / 9 albums.
+- Pre-restore copy: `database.db.pre_restore_20260805_122652`.
+- Re-ran `migrate_albums.py` (noop mostly; cumulative_bytes backfill for 4 users).
+- Reset password for `kny_iv@mail.ru` (`admin`) to value from `ssh_info.md` (`d1k2u3c4SS!!`).
+- Smoke: login OK; `POST /api/payments/mock` → 404; `/docs` 200.
+- Note: larger S3 snapshot `backups/database_20260804_122608.db` has **547** tracks (Ilya 367) — not applied; ask if needed.
+
+## 2026-08-05 — Payment mock gate + schema migrate on prod
+
+- Host: `178.72.184.68` (`emelda`), path `/var/www/sounduk_backend`.
+- Deployed `api/payments.py`: `_payment_mock_enabled()` / `ENABLE_PAYMENT_MOCK` (unset on prod).
+- Backup: `api/payments.py.backup.20260805_121629`.
+- Smoke: `POST /api/payments/mock` authenticated → **404**; `/docs` 200; `sounduk.service` active.
+- Found schema drift after restart: `users.library_revision` missing → auth 500.
+- Ran `python migrate_albums.py` after DB backup `database.db.backup_pre_library_revision_20260805_122034`.
+  - Added: `users.library_revision`, `albums.cover_path`, `tracks.cumulative_bytes` (+ backfill 3 users).
+- Restart `systemctl restart sounduk` → mock 404 OK.
+
 ## 2026-07-23 — YouTube import: устойчивость + hotfix прод
 
 - **Симптом:** часть импортов «ломается» / job зависает; age-gate и geo-errors.
