@@ -1,6 +1,7 @@
 # seed_radio_stations.py
 # Запускать на проде: cd /var/www/sounduk_backend && python3 seed_radio_stations.py
 # Сидирует базу популярными интернет-радиостанциями из открытого каталога Radio Browser.
+# 2026-08-06: dead streams pruned — context/radio_catalog_cleanup_2026-08-06.md
 
 import uuid
 from datetime import datetime
@@ -45,16 +46,12 @@ STATIONS = [
 
     # === Classical / Ambient ===
     {"name": "YourClassical – Peaceful Piano", "stream_url": "https://peacefulpiano.stream.publicradio.org/peacefulpiano.aac", "genre": "Classical, Piano, Relax", "website": "https://www.yourclassical.org/"},
-    {"name": "BBC Radio 3 (Classical)", "stream_url": "http://as-hls-ww-live.akamaized.net/pool_55057080/live/ww/bbc_radio_three/bbc_radio_three.isml/bbc_radio_three-audio%3d128000.norewind.m3u8", "genre": "Classical", "website": "https://www.bbc.co.uk/radio3"},
     {"name": "Iowa Public Radio – Classical", "stream_url": "https://classical-stream.iowapublicradio.org/Classical.mp3", "genre": "Classical", "website": "https://www.iowapublicradio.org/"},
 
     # === Country ===
-    {"name": "Lite Rock 99.9 WEZN", "stream_url": "https://playerservices.streamtheworld.com/api/livestream-redirect/WEZNFMAAC.aac", "genre": "Easy Listening, Lite Rock", "website": "https://www.star991fm.com/"},
 
     # === French ===
     {"name": "France Inter", "stream_url": "https://stream.radiofrance.fr/franceinter/franceinter_hifi.m3u8?id=radiofrance", "genre": "General, Culture", "website": "https://www.radiofrance.fr/franceinter"},
-    {"name": "France Info", "stream_url": "http://direct.franceinfo.fr/live/franceinfo-midfi.mp3", "genre": "News", "website": "https://www.francetvinfo.fr/"},
-    {"name": "France Culture", "stream_url": "http://icecast.radiofrance.fr/franceculture-hifi.aac", "genre": "Culture", "website": "https://www.franceculture.fr/"},
     {"name": "RTL France", "stream_url": "https://live.m6radio.quortex.io/webM89Hc99XApzgfhXNX8ASN5/grouprtl/national/short/audio-64000/index.m3u8", "genre": "General, Talk", "website": "https://www.rtl.fr/"},
     {"name": "RMC France", "stream_url": "https://audio.bfmtv.com/rmcradio_128.mp3", "genre": "News, Sport, Talk", "website": "https://rmc.bfmtv.com/"},
     {"name": "Europe 1", "stream_url": "https://stream.europe1.fr/europe1.aac", "genre": "News, Talk", "website": "https://www.europe1.fr/"},

@@ -1,10 +1,17 @@
 # Журнал задач и изменений API
 
-**Последнее обновление:** 2026-07-23
+**Последнее обновление:** 2026-08-06
 
 ---
 
 ## 📝 Статус текущих работ
+
+### ✅ ЗАВЕРШЕНО (2026-08-06): Radio catalog cleanup
+
+- ✅ Prod probe всех `radio_stations` stream URL → **181 → 148** (удалены 33 мёртвых)
+- ✅ Backup: `backups/database_radio_cleanup_20260806_144617.db`
+- ✅ Док: [`radio_catalog_cleanup_2026-08-06.md`](./radio_catalog_cleanup_2026-08-06.md), JSON: [`radio_deleted_2026-08-06.json`](./radio_deleted_2026-08-06.json)
+- ✅ Seed scripts pruned (`seed_radio_stations.py`, `seed_radio_stations_gist.py`)
 
 ### ✅ ЗАВЕРШЕНО (2026-07-23): Wipe cloud tracks Ilya (knyzeviv@gmail.com)
 

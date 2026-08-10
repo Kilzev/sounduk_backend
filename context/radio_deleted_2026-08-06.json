@@ -1,0 +1,266 @@
+[
+  {
+    "id": "c0c09fd1786a4b749c9ea9f463020620",
+    "name": "BBC Radio 3 (Classical)",
+    "url": "http://as-hls-ww-live.akamaized.net/pool_55057080/live/ww/bbc_radio_three/bbc_radio_three.isml/bbc_radio_three-audio%3d128000.norewind.m3u8",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Found"
+  },
+  {
+    "id": "7a5e14186cf94a75b4df980e49b1ab4b",
+    "name": "Radio Record — A State of Trance",
+    "url": "https://radiorecord.hostingradio.ru/asot64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "026b0411f7524b939e2df5bf0ccfe3e2",
+    "name": "Radio Record — Afro House",
+    "url": "https://radiorecord.hostingradio.ru/afro64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "c8a65b380a6b4f62b052a753e2174a75",
+    "name": "Radio Record — Beach Party",
+    "url": "https://radiorecord.hostingradio.ru/beach64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "7c9b53b0cfbf480db038aa1573617265",
+    "name": "Radio Record — DJ Цветкоff",
+    "url": "https://radiorecord.hostingradio.ru/tsvetkov64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "b581893a8bb1410693280045037d6208",
+    "name": "Radio Record — DJ Gvozd",
+    "url": "https://radiorecord.hostingradio.ru/djgvozd64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "12120c348d744b6094ecdec1457f786b",
+    "name": "Lite Rock 99.9 WEZN",
+    "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/WEZNFMAAC.aac",
+    "status": "bad",
+    "code": 403,
+    "detail": "Forbidden"
+  },
+  {
+    "id": "a8c783db0f7a4db8b72cf252260bd093",
+    "name": "Radio Record — Feel",
+    "url": "https://radiorecord.hostingradio.ru/feel64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "f5ed807011734c698460479ac4375bea",
+    "name": "Radio Record — Lady Waks",
+    "url": "https://radiorecord.hostingradio.ru/ladywaks64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "131b2ac4a5a147d9bbbeed361a4dc0d3",
+    "name": "Radio Record — Lo-Fi House",
+    "url": "https://radiorecord.hostingradio.ru/lofihouse64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "8df28651ed0248d58902fd31bf9088a1",
+    "name": "Radio Record — Martin Garrix",
+    "url": "https://radiorecord.hostingradio.ru/martingarrix64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "715622df7c58422eb102b4b4ce366987",
+    "name": "Radio Record — Nejtrino & Baur",
+    "url": "https://radiorecord.hostingradio.ru/nejtrinobaur64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "66c42c461f8743b48b14a30171e6946f",
+    "name": "Radio Record — Oliver Heldens",
+    "url": "https://radiorecord.hostingradio.ru/oliverheldens64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "2a0dac12b65244e3bb1f070c7165c80d",
+    "name": "Radio Record — Nu Dance",
+    "url": "https://radiorecord.hostingradio.ru/nudance64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "048c445b867f4defad29756befdd5d0f",
+    "name": "Radio Record — Record Classix",
+    "url": "https://radiorecord.hostingradio.ru/classix64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "5e261f23db8d4428829d3a5622242618",
+    "name": "Radio Record — Record Club Show",
+    "url": "https://radiorecord.hostingradio.ru/clubshow64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "d447917071dc4709bfc810f9aba110aa",
+    "name": "Radio Record — Russian Hits",
+    "url": "https://radiorecord.hostingradio.ru/russianhits64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "87ada80872aa45e694898c3d2a0b5e9b",
+    "name": "Radio Record — Summer Lounge",
+    "url": "https://radiorecord.hostingradio.ru/summerlounge64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "7f67a808105d46dcb191c911311bc3a8",
+    "name": "Radio Record — Ultra Music Festival",
+    "url": "https://radiorecord.hostingradio.ru/ultra64.aacp",
+    "status": "bad",
+    "code": 404,
+    "detail": "Not Available"
+  },
+  {
+    "id": "90c0e644b7d6494094569c72c171cb7a",
+    "name": "Retrowave.One",
+    "url": "https://waveretro.ru:8443/stream",
+    "status": "dead",
+    "code": 0,
+    "detail": "SSL CERTIFICATE_VERIFY_FAILED"
+  },
+  {
+    "id": "b47b8e57243e49258f8d2f2a8798c15a",
+    "name": "Wasteland FM",
+    "url": "http://wasteland.su:8080/radio",
+    "status": "dead",
+    "code": 0,
+    "detail": "Connection refused"
+  },
+  {
+    "id": "52add234ceb74bf0bac13b6ad93d87b5",
+    "name": "Радиола Саратов",
+    "url": "http://online1.gkvr.ru:8000/radiola_srt_128.mp3",
+    "status": "dead",
+    "code": 0,
+    "detail": "DNS"
+  },
+  {
+    "id": "6a4af9aeee31440b8fdc46aa4be8715c",
+    "name": "Swing Radio",
+    "url": "http://icepe2.infomaniak.ch:80/swingfm-128.mp3",
+    "status": "dead",
+    "code": 0,
+    "detail": "DNS"
+  },
+  {
+    "id": "147c92c1e2a14ee08a09d035f52c2155",
+    "name": "Ностальжи",
+    "url": "http://85.143.216.212:8025/stream",
+    "status": "dead",
+    "code": 0,
+    "detail": "No route"
+  },
+  {
+    "id": "6460aa5c45234d5f903936feaeb9f045",
+    "name": "Радио Лучшие Песни",
+    "url": "http://85.114.140.64:8000/666",
+    "status": "dead",
+    "code": 0,
+    "detail": "No route"
+  },
+  {
+    "id": "23b0bb4cfa95411aa8341031d5ab640a",
+    "name": "Megapolis FM",
+    "url": "http://109.239.129.43:8010/megapolis-48.aac",
+    "status": "dead",
+    "code": 0,
+    "detail": "No route"
+  },
+  {
+    "id": "f3a4be4eb8bd4a5696cd10fd303bdf72",
+    "name": "France Culture",
+    "url": "http://icecast.radiofrance.fr/franceculture-hifi.aac",
+    "status": "dead",
+    "code": 0,
+    "detail": "Timeout"
+  },
+  {
+    "id": "a7e58ccadca643f3886b99e2b0c99d3f",
+    "name": "France Info",
+    "url": "http://direct.franceinfo.fr/live/franceinfo-midfi.mp3",
+    "status": "dead",
+    "code": 0,
+    "detail": "Timeout"
+  },
+  {
+    "id": "960cabe046ee4a09b6ebdeaa52e03fbf",
+    "name": "Record Супердискотека 90-х",
+    "url": "http://online.radiorecord.ru:8102/sd90_128",
+    "status": "dead",
+    "code": 0,
+    "detail": "Timeout"
+  },
+  {
+    "id": "aa8c6ea5d5da40f093bb4b175766148d",
+    "name": "Радио 1945",
+    "url": "http://78.46.66.184:1945/128",
+    "status": "dead",
+    "code": 0,
+    "detail": "Timeout"
+  },
+  {
+    "id": "4e76e10c71e149d3877efdbc13d37664",
+    "name": "НостальгияФМ",
+    "url": "http://nostalgiafm.hostingradio.ru:8000/nostalgiafm.mp3",
+    "status": "dead",
+    "code": 0,
+    "detail": "Timeout"
+  },
+  {
+    "id": "6d4659a420f94748b70be43328d45dee",
+    "name": "Радио Золотой Век",
+    "url": "http://setmedia.ru:8000/high",
+    "status": "dead",
+    "code": 0,
+    "detail": "Timeout"
+  },
+  {
+    "id": "e73072f4ae184dddb515ba268948e05a",
+    "name": "Радио Подмосковные вечера",
+    "url": "http://setmedia.ru:8000/high5",
+    "status": "dead",
+    "code": 0,
+    "detail": "Timeout"
+  }
+]
