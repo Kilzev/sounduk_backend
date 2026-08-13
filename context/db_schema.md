@@ -31,7 +31,8 @@ CREATE TABLE users (
     
     -- Хранилище
     storage_limit BIGINT DEFAULT 1073741824,  -- 1 GB
-    is_restricted BOOLEAN DEFAULT FALSE       -- блокировка пользователя
+    is_restricted BOOLEAN DEFAULT FALSE,      -- блокировка пользователя
+    allow_youtube_import BOOLEAN DEFAULT FALSE -- per-account YouTube / link import
 );
 ```
 
@@ -145,6 +146,7 @@ CREATE TABLE registration_limit (
 │ username, email                     │       │
 │ is_premium, premium_expires_at      │       │
 │ storage_limit, is_restricted        │       │
+│ allow_youtube_import                │       │
 │ verification fields...              │       │
 └─────────────────────────────────────┘       │
        │                                       │

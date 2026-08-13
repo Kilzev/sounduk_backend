@@ -26,6 +26,8 @@ class User(Base):
     premium_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     storage_limit: Mapped[int] = mapped_column(BigInteger, default=1073741824) # 1 GB default
     is_restricted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Per-account feature: YouTube / link import (not tied to Premium)
+    allow_youtube_import: Mapped[bool] = mapped_column(Boolean, default=False)
     library_revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
     tracks: Mapped[List["Track"]] = relationship("Track", back_populates="owner", cascade="all, delete-orphan")

@@ -130,7 +130,7 @@ async def get_current_admin_user(
 async def get_premium_user(
     current_user: models.User = Depends(get_current_user),
 ) -> models.User:
-    """Только премиум-пользователи — для импорта с YouTube и по ссылкам."""
+    """Только премиум-пользователи."""
     if not current_user.is_premium:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -142,5 +142,24 @@ async def get_premium_user(
 async def get_verified_premium_user(
     verified_user: models.User = Depends(get_verified_user),
     _premium: models.User = Depends(get_premium_user),
+) -> models.User:
+    return verified_user
+
+
+async def get_youtube_import_user(
+    current_user: models.User = Depends(get_current_user),
+) -> models.User:
+    """Per-account feature flag for YouTube / link import (not Premium)."""
+    if not current_user.allow_youtube_import:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Импорт по ссылкам недоступен для этого аккаунта",
+        )
+    return current_user
+
+
+async def get_verified_youtube_import_user(
+    verified_user: models.User = Depends(get_verified_user),
+    _flag: models.User = Depends(get_youtube_import_user),
 ) -> models.User:
     return verified_user

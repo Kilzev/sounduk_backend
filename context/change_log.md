@@ -1,5 +1,42 @@
 # Change Log
 
+## 2026-08-12 — Per-account YouTube import flag
+
+- `users.allow_youtube_import` (default false); в `UserResponse` / admin PATCH.
+- Import youtube/direct Depends → `get_verified_youtube_import_user` (не Premium).
+- Миграция: `add_cols.py` → `allow_youtube_import BOOLEAN DEFAULT 0`.
+
+## 2026-08-11 — DB backup retention 7 days (<10MB)
+
+- One-shot prune: deleted **5418** old `backups/*`, then densified last week to
+  **1 snapshot/day** → backups **9 objs / 8.7 MiB** (was ~3.7 GiB).
+- `BACKUP_RETENTION_DAYS=7`; `upload_db_to_s3`: (1) prune week+ densify (2) save
+  latest + timestamped. Bucket total ~3.7 GiB (mostly user audio).
+
+## 2026-08-11 — Poisoned S3 latest: stop old host + restore + harden
+
+- **Причина:** старый API `185.76.242.73` всё ещё заливал БД от 21.07 (343 трека)
+  каждые 30 мин в тот же бакет `sounduk` → `database_latest.db`. Emelda при
+  рестарте 10.08 сравнивала S3 `LastModified` (время upload) с mtime local и
+  затирала живую БД.
+- **Этап 1:** `systemctl stop|disable sounduk` на `185.76.242.73`; orphan uvicorn убит.
+- **Этап 2:** на `178.72.184.68` восстановлен `backups/database_20260810_103220.db`
+  → tracks=547 / Ilya=367 / users=14 / albums=8; pre-copy
+  `database.db.pre_restore_poisoned_20260811_100421`; `upload_db_to_s3` latest.
+- **Этап 3:** `db_backup.download_db_from_s3` — если local существует, auto-restore
+  **запрещён** (только fill при отсутствии файла). Деплой `db_backup.py` на emelda;
+  лог: `keep local; auto-restore disabled when local exists`.
+
+## 2026-08-10 — Play RU payment geo gate
+
+- Deployed `api/payments.py` + `schemas.py` to `178.72.184.68`.
+- `PAYMENTS_GEO_ENFORCE=true`, `PAYMENTS_ALLOWED_COUNTRIES=RU` in prod `.env`.
+- `GET /api/payments/eligibility`; `POST /create` → 403 `payment_region_unavailable` вне allowlist (fail closed on lookup miss).
+- Country via ip-api.com (or `PAYMENTS_GEO_FORCE_COUNTRY` for tests).
+- Backups: `payments.py.backup.*`, `schemas.py.backup.*`.
+- Smoke: docs 200; eligibility US deny / RU allow; unauth eligibility 401; service active.
+- Tests: `test/test_payments.py` — 7 passed.
+
 ## 2026-08-05 — Restore fuller DB (Ilya ~367 tracks)
 
 - User reported Ilya ~400 tracks; S3 max found: `backups/database_20260804_122608.db` → **Ilya=367**, total **547**, users 14, albums 8.

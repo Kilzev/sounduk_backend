@@ -21,6 +21,7 @@ class UserResponse(BaseModel):
     storage_used: int = 0
     is_premium: bool
     is_verified: bool = False
+    allow_youtube_import: bool = False
 
     class Config:
         from_attributes = True
@@ -31,6 +32,7 @@ class AdminUserResponse(UserResponse):
     storage_limit: int
     is_restricted: bool
     storage_used: int = 0
+    allow_youtube_import: bool = False
 
 class UserRegisterResponse(BaseModel):
     id: int
@@ -40,6 +42,7 @@ class UserRegisterResponse(BaseModel):
     storage_limit: int
     is_premium: bool
     is_verified: bool = False
+    allow_youtube_import: bool = False
 
     class Config:
         from_attributes = True
@@ -53,6 +56,7 @@ class UserUpdateAdmin(BaseModel):
     is_restricted: Optional[bool] = None
     is_verified: Optional[bool] = None
     is_admin: Optional[bool] = None
+    allow_youtube_import: Optional[bool] = None
 
 class UserUpdateSelf(BaseModel):
     username: Optional[str] = None
@@ -200,6 +204,13 @@ class PaymentStatusResponse(BaseModel):
 class PaymentCreateResponse(BaseModel):
     payment_id: str
     confirmation_url: Optional[str] = None
+
+
+class PaymentEligibilityResponse(BaseModel):
+    """Whether YooKassa checkout is offered for this client IP (Play RU gate)."""
+    allowed: bool
+    country: Optional[str] = None
+    message_key: str
 
 
 class ImportedTrack(BaseModel):

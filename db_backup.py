@@ -2,7 +2,6 @@
 import fcntl
 import logging
 import os
-import re
 import shutil
 import threading
 from datetime import datetime, timedelta, timezone
@@ -15,14 +14,10 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "database.db")
 S3_DB_LATEST_KEY = "backups/database_latest.db"
 S3_DB_PREFIX = "backups/"
-# Timestamped keys: backups/database_YYYYMMDD_HHMMSS.db
-_TIMESTAMPED_DB_RE = re.compile(
-    r"^backups/database_(\d{8})_(\d{6})\.db$"
-)
 STARTUP_LOCK_PATH = os.path.join(BASE_DIR, ".startup.lock")
 
 BACKUP_INTERVAL_SECONDS = 60 * 60 * 24  # раз в сутки
-BACKUP_RETENTION_DAYS = 90
+BACKUP_RETENTION_DAYS = 7  # rolling week: ~7×1MB < 10MB
 
 _backup_thread = None
 _stop_event = threading.Event()
@@ -64,9 +59,10 @@ def run_startup_once() -> bool:
 
 def prune_old_backups(days: int = BACKUP_RETENTION_DAYS) -> int:
     """
-    Удаляет timestamped бэкапы старше `days` дней.
-    Никогда не трогает backups/database_latest.db.
-    Возвращает число удалённых объектов. Ошибки логирует, не пробрасывает.
+    Чистит backups/:
+    1) удаляет всё старше `days` дней (кроме database_latest.db);
+    2) в оставшемся окне оставляет один объект на UTC-день (largest),
+       плюс database_latest — чтобы при частых upload'ах вес оставался < ~10MB.
     """
     deleted = 0
     try:
@@ -74,28 +70,58 @@ def prune_old_backups(days: int = BACKUP_RETENTION_DAYS) -> int:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         paginator = s3.get_paginator("list_objects_v2")
         to_delete: list[str] = []
+        by_day: dict[str, list[tuple[int, str, datetime]]] = {}
 
         for page in paginator.paginate(Bucket=S3_BUCKET_NAME, Prefix=S3_DB_PREFIX):
             for obj in page.get("Contents") or []:
                 key = obj.get("Key") or ""
-                if key == S3_DB_LATEST_KEY:
-                    continue
-                if not _TIMESTAMPED_DB_RE.match(key):
+                if key == S3_DB_LATEST_KEY or key == S3_DB_PREFIX.rstrip("/"):
                     continue
                 last_modified = obj.get("LastModified")
                 if last_modified is None:
                     continue
                 if last_modified.tzinfo is None:
                     last_modified = last_modified.replace(tzinfo=timezone.utc)
+                else:
+                    last_modified = last_modified.astimezone(timezone.utc)
                 if last_modified < cutoff:
                     to_delete.append(key)
+                    continue
+                day = last_modified.date().isoformat()
+                by_day.setdefault(day, []).append(
+                    (int(obj.get("Size") or 0), key, last_modified)
+                )
 
-        for key in to_delete:
+        # One snapshot per day (prefer largest, then newest).
+        for items in by_day.values():
+            items.sort(key=lambda x: (x[0], x[2]), reverse=True)
+            for _, key, _ in items[1:]:
+                to_delete.append(key)
+
+        for i in range(0, len(to_delete), 1000):
+            chunk = to_delete[i : i + 1000]
             try:
-                s3.delete_object(Bucket=S3_BUCKET_NAME, Key=key)
-                deleted += 1
+                resp = s3.delete_objects(
+                    Bucket=S3_BUCKET_NAME,
+                    Delete={"Objects": [{"Key": k} for k in chunk], "Quiet": True},
+                )
+                errors = resp.get("Errors") or []
+                deleted += len(chunk) - len(errors)
+                for err in errors:
+                    logger.error(
+                        "prune delete failed key=%s code=%s msg=%s",
+                        err.get("Key"),
+                        err.get("Code"),
+                        err.get("Message"),
+                    )
             except Exception as e:
-                logger.error("prune delete failed key=%s error=%s", key, e)
+                logger.error("prune batch delete failed error=%s", e)
+                for key in chunk:
+                    try:
+                        s3.delete_object(Bucket=S3_BUCKET_NAME, Key=key)
+                        deleted += 1
+                    except Exception as e2:
+                        logger.error("prune delete failed key=%s error=%s", key, e2)
 
         logger.info(
             "prune old backups done retention_days=%s deleted=%s candidates=%s",
@@ -109,7 +135,11 @@ def prune_old_backups(days: int = BACKUP_RETENTION_DAYS) -> int:
 
 
 def upload_db_to_s3():
-    """Загружает текущую БД на S3 с версионированием и prune старых копий."""
+    """Загружает текущую БД на S3: сначала prune старше недели, затем новая копия.
+
+    Порядок: (1) удалить timestamped бэкапы старше BACKUP_RETENTION_DAYS,
+    (2) записать database_latest + timestamped. Так backups/ остаётся < ~10MB.
+    """
     if not os.path.exists(DB_PATH):
         logger.warning("database.db not found, skip backup")
         return False
@@ -120,11 +150,13 @@ def upload_db_to_s3():
         shutil.copy2(DB_PATH, tmp_path)
         s3 = get_s3_client()
 
-        # Загружаем как latest (для быстрого восстановления)
+        # 1) Сначала убрать недельной давности (и старше)
+        prune_old_backups(BACKUP_RETENTION_DAYS)
+
+        # 2) Сохранить новую: latest + timestamped
         with open(tmp_path, "rb") as f:
             s3.upload_fileobj(f, S3_BUCKET_NAME, S3_DB_LATEST_KEY)
 
-        # Загружаем с меткой времени (история бэкапов)
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         timestamped_key = f"backups/database_{timestamp}.db"
         with open(tmp_path, "rb") as f:
@@ -132,8 +164,6 @@ def upload_db_to_s3():
 
         size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
         logger.info("db uploaded to S3 key=%s size_mb=%.1f", timestamped_key, size_mb)
-
-        prune_old_backups(BACKUP_RETENTION_DAYS)
         return True
 
     except Exception as e:
@@ -144,109 +174,34 @@ def upload_db_to_s3():
             os.remove(tmp_path)
 
 
-def _file_sha256(path: str) -> str:
-    import hashlib
-
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
 def download_db_from_s3():
-    """Скачивает последнюю БД с S3 при старте, если локальная старше или отсутствует.
+    """Скачивает БД с S3 при старте только если локального файла нет.
 
-    Если локальный файл новее S3 по UTC mtime, но sha отличается — оставляем local
-    (не затираем свежие данные старым бэкапом).
+    Если `database.db` уже есть — никогда не затираем его из S3 на старте.
+    S3 LastModified = время upload, не возраст данных: чужой/старый хост
+    с тем же бакетом может «отравить» latest свежим upload'ом старого файла.
+    Disaster recovery — вручную (остановить сервис, заменить файл, upload_db_to_s3).
     """
     try:
+        if os.path.exists(DB_PATH):
+            local_size = os.path.getsize(DB_PATH)
+            logger.info(
+                "keep local; auto-restore disabled when local exists size_mb=%.1f",
+                local_size / (1024 * 1024),
+            )
+            return False
+
         s3 = get_s3_client()
-
         try:
-            s3_obj = s3.head_object(Bucket=S3_BUCKET_NAME, Key=S3_DB_LATEST_KEY)
-            s3_modified = s3_obj.get("LastModified")
-            s3_size = int(s3_obj.get("ContentLength") or 0)
-            s3_etag = (s3_obj.get("ETag") or "").strip('"')
+            s3.head_object(Bucket=S3_BUCKET_NAME, Key=S3_DB_LATEST_KEY)
         except Exception:
-            logger.warning("S3 backup not found, using local db")
+            logger.warning("S3 backup not found, no local db")
             return False
 
-        local_exists = os.path.exists(DB_PATH)
-
-        if not local_exists:
-            s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, DB_PATH)
-            size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
-            logger.info("db restored from S3 (no local) size_mb=%.1f", size_mb)
-            return True
-
-        local_modified = datetime.fromtimestamp(
-            os.path.getmtime(DB_PATH), tz=timezone.utc
-        )
-        if s3_modified.tzinfo is None:
-            s3_modified_utc = s3_modified.replace(tzinfo=timezone.utc)
-        else:
-            s3_modified_utc = s3_modified.astimezone(timezone.utc)
-
-        local_size = os.path.getsize(DB_PATH)
-
-        # Local strictly newer → never clobber with older S3 snapshot.
-        if local_modified > s3_modified_utc:
-            logger.info(
-                "local db newer than S3 (utc); keep local local=%s s3=%s etag=%s",
-                local_modified.isoformat(),
-                s3_modified_utc.isoformat(),
-                s3_etag,
-            )
-            return False
-
-        # Local older → restore from S3.
-        if local_modified < s3_modified_utc:
-            s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, DB_PATH)
-            size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
-            logger.info(
-                "db restored from S3 (local older) size_mb=%.1f local=%s s3=%s",
-                size_mb,
-                local_modified.isoformat(),
-                s3_modified_utc.isoformat(),
-            )
-            return True
-
-        # Same mtime second-resolution / equal: compare content.
-        if local_size != s3_size:
-            s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, DB_PATH)
-            size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
-            logger.info(
-                "db restored from S3 (same mtime, size differs) size_mb=%.1f",
-                size_mb,
-            )
-            return True
-
-        tmp_check = DB_PATH + ".restore_check"
-        try:
-            s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, tmp_check)
-            local_sha = _file_sha256(DB_PATH)
-            s3_sha = _file_sha256(tmp_check)
-            if local_sha == s3_sha:
-                logger.info(
-                    "local db up to date (utc mtime+sha), skip S3 restore etag=%s",
-                    s3_etag,
-                )
-                return False
-            # Equal mtime, different sha: prefer S3 as canonical backup channel.
-            os.replace(tmp_check, DB_PATH)
-            size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
-            logger.warning(
-                "db restored from S3 (equal mtime, sha differs) size_mb=%.1f",
-                size_mb,
-            )
-            return True
-        finally:
-            if os.path.exists(tmp_check):
-                try:
-                    os.remove(tmp_check)
-                except OSError:
-                    pass
+        s3.download_file(S3_BUCKET_NAME, S3_DB_LATEST_KEY, DB_PATH)
+        size_mb = os.path.getsize(DB_PATH) / (1024 * 1024)
+        logger.info("db restored from S3 (no local) size_mb=%.1f", size_mb)
+        return True
 
     except Exception as e:
         logger.error("db restore from S3 failed error=%s", e)

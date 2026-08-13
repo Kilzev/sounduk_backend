@@ -296,6 +296,16 @@ async def update_user(
         changes["is_premium"] = {"old": user.is_premium, "new": user_update.is_premium}
         user.is_premium = user_update.is_premium
 
+    if (
+        user_update.allow_youtube_import is not None
+        and user_update.allow_youtube_import != user.allow_youtube_import
+    ):
+        changes["allow_youtube_import"] = {
+            "old": user.allow_youtube_import,
+            "new": user_update.allow_youtube_import,
+        }
+        user.allow_youtube_import = user_update.allow_youtube_import
+
     if user_update.storage_limit is not None and user_update.storage_limit != user.storage_limit:
         changes["storage_limit"] = {"old": user.storage_limit, "new": user_update.storage_limit}
         user.storage_limit = user_update.storage_limit

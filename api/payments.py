@@ -8,11 +8,16 @@ from auth_utils import get_current_user, get_verified_user
 from datetime import datetime, timedelta
 from yookassa import Configuration, Payment
 from yookassa.domain.notification import WebhookNotification
+import httpx
+import ipaddress
+import logging
 import os
 import uuid
 import json
+from typing import Optional
 
 router = APIRouter()
+payments_logger = logging.getLogger("sounduk.payments")
 
 # --- Конфигурация YooKassa ---
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "your_shop_id")
@@ -24,6 +29,108 @@ def _payment_mock_enabled() -> bool:
         "1",
         "true",
         "yes",
+    )
+
+
+def _payments_geo_enforce() -> bool:
+    return os.getenv("PAYMENTS_GEO_ENFORCE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def _payments_allowed_countries() -> set[str]:
+    raw = os.getenv("PAYMENTS_ALLOWED_COUNTRIES", "RU")
+    return {c.strip().upper() for c in raw.split(",") if c.strip()}
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    real_ip = request.headers.get("X-Real-IP")
+    if real_ip:
+        return real_ip.strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _is_private_or_local_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+    )
+
+
+def _lookup_country_code(ip: str) -> Optional[str]:
+    """Resolve ISO country for a public IP. Returns None on failure / private IP."""
+    forced = os.getenv("PAYMENTS_GEO_FORCE_COUNTRY", "").strip().upper()
+    if forced:
+        return forced
+
+    if not ip or ip == "unknown" or _is_private_or_local_ip(ip):
+        return None
+
+    try:
+        # Free ip-api.com (HTTP). fields=status,countryCode keeps payload tiny.
+        with httpx.Client(timeout=2.5) as client:
+            resp = client.get(
+                f"http://ip-api.com/json/{ip}",
+                params={"fields": "status,countryCode"},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("status") != "success":
+                return None
+            code = (data.get("countryCode") or "").strip().upper()
+            return code or None
+    except Exception as exc:
+        payments_logger.warning("geo_lookup_fail ip=%s error=%s", ip, type(exc).__name__)
+        return None
+
+
+def _payment_eligibility(request: Request) -> schemas.PaymentEligibilityResponse:
+    """
+    Play RU gate: YooKassa only when client country is in allowlist.
+    When PAYMENTS_GEO_ENFORCE is off, always allowed (local/dev).
+    Lookup failure → not allowed (fail closed) while enforce is on.
+    """
+    if not _payments_geo_enforce():
+        return schemas.PaymentEligibilityResponse(
+            allowed=True,
+            country=None,
+            message_key="payment_region_ok",
+        )
+
+    ip = _client_ip(request)
+    country = _lookup_country_code(ip)
+    allowed = bool(country and country in _payments_allowed_countries())
+    return schemas.PaymentEligibilityResponse(
+        allowed=allowed,
+        country=country,
+        message_key="payment_region_ok" if allowed else "payment_region_unavailable",
+    )
+
+
+def _require_payment_region(request: Request) -> None:
+    eligibility = _payment_eligibility(request)
+    if eligibility.allowed:
+        return
+    payments_logger.info(
+        "payment_geo_denied country=%s ip=%s",
+        eligibility.country,
+        _client_ip(request),
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="payment_region_unavailable",
     )
 
 Configuration.account_id = YOOKASSA_SHOP_ID
@@ -77,16 +184,29 @@ def grant_premium_access(db: Session, user: models.User, product_id: str):
     db.refresh(user)
 
 
+@router.get("/eligibility", response_model=schemas.PaymentEligibilityResponse)
+async def payment_eligibility(
+    http_request: Request,
+    current_user: models.User = Depends(get_current_user),
+):
+    """Whether this client may start YooKassa checkout (geo allowlist)."""
+    _ = current_user
+    return _payment_eligibility(http_request)
+
+
 @router.post("/create", response_model=schemas.PaymentCreateResponse)
 async def create_payment(
-    request: schemas.PaymentRequest,
+    payment_in: schemas.PaymentRequest,
+    http_request: Request,
     current_user: models.User = Depends(get_verified_user),
     db: Session = Depends(get_db)
 ):
     """
     Создание платежа в ЮKassa.
     """
-    product = PRODUCTS.get(request.product_id)
+    _require_payment_region(http_request)
+
+    product = PRODUCTS.get(payment_in.product_id)
     if not product:
         raise HTTPException(status_code=400, detail="Неверный ID товара")
 
@@ -105,7 +225,7 @@ async def create_payment(
             "description": f"{product['description']} (User: {current_user.id})",
             "metadata": {
                 "user_id": current_user.id,
-                "product_id": request.product_id
+                "product_id": payment_in.product_id
             }
         }, idempotence_key)
 
@@ -113,7 +233,7 @@ async def create_payment(
         db_payment = models.Payment(
             id=payment.id,
             user_id=current_user.id,
-            product_id=request.product_id,
+            product_id=payment_in.product_id,
             amount=int(float(product["price"])), # Store as int for simplicity matching existing model type
             status=payment.status,
             currency="RUB"
@@ -128,6 +248,8 @@ async def create_payment(
             confirmation_url=confirmation_url
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"YooKassa Error: {e}")
         error_str = str(e)
@@ -141,7 +263,7 @@ async def create_payment(
              db_payment = models.Payment(
                 id=fake_id,
                 user_id=current_user.id,
-                product_id=request.product_id,
+                product_id=payment_in.product_id,
                 amount=int(float(product["price"])),
                 status="pending",
                 currency="RUB"

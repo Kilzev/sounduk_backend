@@ -166,6 +166,27 @@ def test_audit_log_records_actions(client):
     assert "is_premium" in logs[0]["details"]
 
 
+def test_admin_can_toggle_allow_youtube_import(client):
+    admin_token = register_and_login(client, "yt_flag_admin")
+    _make_admin(_get_email_for_username("yt_flag_admin"))
+
+    user_token = register_and_login(client, "yt_flag_target")
+    me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {user_token}"}).json()
+    assert me.get("allow_youtube_import") is False
+    target_id = me["id"]
+
+    patched = client.patch(
+        f"/api/admin/users/{target_id}",
+        json={"allow_youtube_import": True},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["allow_youtube_import"] is True
+
+    me2 = client.get("/api/auth/me", headers={"Authorization": f"Bearer {user_token}"}).json()
+    assert me2["allow_youtube_import"] is True
+
+
 def test_regular_user_cannot_view_audit_log(client):
     token = register_and_login(client, "regular_user_2")
     response = client.get(

@@ -12,7 +12,13 @@ from sqlalchemy import func
 from database import get_db, SessionLocal
 import models
 import schemas
-from auth_utils import get_current_user, get_verified_user, get_verified_premium_user, create_stream_token, decode_token
+from auth_utils import (
+    get_current_user,
+    get_verified_user,
+    get_verified_youtube_import_user,
+    create_stream_token,
+    decode_token,
+)
 import uuid
 # from s3_utils import upload_file_to_s3, generate_presigned_url, delete_file_from_s3
 import os
@@ -1957,7 +1963,7 @@ async def repair_track_metadata(
 @router.post("/import/youtube/track", response_model=schemas.TrackImportResponse, status_code=status.HTTP_201_CREATED)
 async def import_youtube_track(
     payload: schemas.YouTubeImportRequest,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db),
 ):
     watch_url = await _resolve_single_youtube_watch_url(payload.youtube_url)
@@ -1971,7 +1977,7 @@ async def import_youtube_track(
 @router.post("/import/youtube/playlist", response_model=schemas.TrackImportResponse, status_code=status.HTTP_201_CREATED)
 async def import_youtube_playlist(
     payload: schemas.YouTubeImportRequest,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db),
 ):
     watch_urls = await _expand_youtube_watch_urls(payload.youtube_url)
@@ -1990,7 +1996,7 @@ async def import_youtube_playlist(
 @router.post("/import/youtube/jobs", response_model=schemas.ImportJobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_youtube_import_job(
     payload: schemas.YouTubeImportJobCreateRequest,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db),
 ):
     watch_urls = await _expand_youtube_watch_urls(payload.youtube_url)
@@ -2049,7 +2055,7 @@ async def create_youtube_import_job(
 @router.post("/import/direct", response_model=schemas.TrackImportResponse, status_code=status.HTTP_201_CREATED)
 async def import_direct_track(
     payload: schemas.DirectTrackImportRequest,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db)
 ):
     item = schemas.DirectTrackImportItem(
@@ -2066,7 +2072,7 @@ async def import_direct_track(
 @router.post("/import/direct/batch", response_model=schemas.TrackImportResponse, status_code=status.HTTP_201_CREATED)
 async def import_direct_batch(
     payload: schemas.DirectBatchImportRequest,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db)
 ):
     if not payload.tracks:
@@ -2088,7 +2094,7 @@ async def import_direct_batch(
 @router.post("/import/direct/jobs", response_model=schemas.ImportJobCreateResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_direct_import_job(
     payload: schemas.DirectImportJobCreateRequest,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db),
 ):
     if not payload.tracks:
@@ -2152,7 +2158,7 @@ async def create_direct_import_job(
 @router.get("/import/direct/jobs/{job_id}", response_model=schemas.ImportJobResponse)
 async def get_direct_import_job(
     job_id: str,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db),
 ):
     job = (
@@ -2176,7 +2182,7 @@ async def get_direct_import_job_items(
     job_id: str,
     offset: int = 0,
     limit: int = 200,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db),
 ):
     job = (
@@ -2206,7 +2212,7 @@ async def get_direct_import_job_items(
 @router.post("/import/direct/jobs/{job_id}/retry-failed", response_model=schemas.ImportJobRetryResponse)
 async def retry_direct_import_job_failed(
     job_id: str,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db),
 ):
     job = (
@@ -2250,7 +2256,7 @@ async def retry_direct_import_job_failed(
 @router.post("/import/direct/jobs/{job_id}/cancel", response_model=schemas.ImportJobResponse)
 async def cancel_direct_import_job(
     job_id: str,
-    current_user: models.User = Depends(get_verified_premium_user),
+    current_user: models.User = Depends(get_verified_youtube_import_user),
     db: Session = Depends(get_db),
 ):
     job = (
