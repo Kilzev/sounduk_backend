@@ -12,5 +12,5 @@ httpx
 pytest
 mutagen
 python-dotenv
-boto3
+pillow>=10.4.0
 yt-dlp>=2024.1.0

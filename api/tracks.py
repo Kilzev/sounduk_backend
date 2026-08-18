@@ -46,6 +46,7 @@ from cover_cache import (
 from cover_storage import (
     delete_cover_from_s3,
     download_cover_by_url,
+    presigned_cover_url,
     resolve_cover_image,
     upload_track_cover_to_s3,
 )
@@ -1643,7 +1644,7 @@ async def get_track_cover(
 @router.get("")
 async def get_tracks(
     since_revision: int | None = Query(None, alias="since_revision"),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(30, ge=1, le=200),
     cursor: str | None = Query(None),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -1681,15 +1682,16 @@ async def get_tracks(
     query = db.query(models.Track).filter(models.Track.user_id == current_user.id)
     if cursor:
         created_at, track_id = _parse_track_cursor(cursor)
+        # Newest-first: next page is older than the last row of the previous page.
         query = query.filter(
-            (models.Track.created_at > created_at)
+            (models.Track.created_at < created_at)
             | (
                 (models.Track.created_at == created_at)
-                & (models.Track.id > track_id)
+                & (models.Track.id < track_id)
             )
         )
 
-    query = query.order_by(models.Track.created_at.asc(), models.Track.id.asc())
+    query = query.order_by(models.Track.created_at.desc(), models.Track.id.desc())
 
     has_more = False
     next_cursor: str | None = None
@@ -1700,11 +1702,16 @@ async def get_tracks(
         next_cursor = _make_track_cursor(tracks[-1])
 
     result_tracks = []
-    for track in tracks:
+    cover_urls = await asyncio.gather(
+        *[presigned_cover_url(track.cover_path) for track in tracks]
+    )
+    for track, cover_url in zip(tracks, cover_urls):
         track_out = schemas.TrackResponse.model_validate(track)
         track_dict = track_out.model_dump(mode="json")
         track_dict["is_frozen"] = _track_is_frozen(track, current_user.storage_limit)
         track_dict["has_cover"] = bool(track.cover_path)
+        if cover_url:
+            track_dict["cover_url"] = cover_url
         result_tracks.append(track_dict)
 
     body = {

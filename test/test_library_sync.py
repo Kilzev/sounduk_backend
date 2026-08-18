@@ -100,12 +100,11 @@ def test_upload_track_bumps_revision(client):
 
 
 def test_get_tracks_default_limit_and_cursor(client):
-    """GET /api/tracks always pages (default limit=50); never dumps full library."""
+    """GET /api/tracks pages newest-first (default limit=30)."""
     token = register_and_login(client, "lib_page_tracks")
     headers = _auth(token)
 
-    # Seed > default page size
-    for i in range(55):
+    for i in range(35):
         mp3_header = b"ID3" + b"\x00" * 100
         files = {"file": (f"t{i}.mp3", io.BytesIO(mp3_header), "audio/mpeg")}
         data = {
@@ -119,18 +118,55 @@ def test_get_tracks_default_limit_and_cursor(client):
     r = client.get("/api/tracks", headers=headers)
     assert r.status_code == 200
     body = r.json()
-    assert body["total"] >= 55
-    assert len(body["tracks"]) == 50
+    assert body["total"] >= 35
+    assert len(body["tracks"]) == 30
     assert body["has_more"] is True
     assert body.get("next_cursor")
 
+    first_ids = [t["id"] for t in body["tracks"]]
+    first_dates = [t["created_at"] for t in body["tracks"]]
+    assert first_dates == sorted(first_dates, reverse=True)
+
     r2 = client.get(
         "/api/tracks",
-        params={"cursor": body["next_cursor"], "limit": 50},
+        params={"cursor": body["next_cursor"], "limit": 30},
         headers=headers,
     )
     assert r2.status_code == 200
     body2 = r2.json()
     assert len(body2["tracks"]) >= 5
-    ids = {t["id"] for t in body["tracks"]} | {t["id"] for t in body2["tracks"]}
-    assert len(ids) >= 55
+    second_ids = [t["id"] for t in body2["tracks"]]
+    assert set(first_ids).isdisjoint(second_ids)
+    # Page 2 is older than (or equal, then lower id) the last row of page 1.
+    assert body2["tracks"][0]["created_at"] <= first_dates[-1]
+    ids = set(first_ids) | set(second_ids)
+    assert len(ids) >= 35
+
+
+def test_get_tracks_first_page_is_newest(client):
+    token = register_and_login(client, "lib_newest_first")
+    headers = _auth(token)
+    for i, title in enumerate(("oldest", "middle", "newest"), start=1):
+        files = {
+            "file": (f"{title}.mp3", io.BytesIO(b"ID3" + b"\x00" * 100), "audio/mpeg")
+        }
+        data = {
+            "title": title,
+            "artist": "Ord",
+            "duration": "10",
+            "created_at": f"2026-01-0{i}T12:00:00",
+        }
+        r = client.post("/api/tracks/upload", files=files, data=data, headers=headers)
+        assert r.status_code in (200, 201), r.text
+
+    r = client.get("/api/tracks", params={"limit": 1}, headers=headers)
+    assert r.status_code == 200
+    assert r.json()["tracks"][0]["title"] == "newest"
+
+    r2 = client.get(
+        "/api/tracks",
+        params={"limit": 1, "cursor": r.json()["next_cursor"]},
+        headers=headers,
+    )
+    assert r2.status_code == 200
+    assert r2.json()["tracks"][0]["title"] == "middle"

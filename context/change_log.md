@@ -1,5 +1,18 @@
 # Change Log
 
+## 2026-08-18 — Deploy API+web (keep live DB)
+
+- Live SQLite **не** трогали: snapshot `backups_local/database_pre_deploy_20260818_161344.db`; после `systemctl restart sounduk` — `keep local`, **569 tracks / 25 users / 8 albums**.
+- S3 fallback наготове: `backups/database_20260818_084304.db` (= `database_latest.db`, 1.09 MB). Не понадобился.
+- API: `GET /api/tracks` newest-first, default limit 30.
+- Web: `sounduk.ru` новый `build/web`.
+
+## 2026-08-18 — GET /api/tracks newest-first pages of 30
+
+- Список треков: `created_at DESC, id DESC` (раньше ASC — клиент пересортировывал и лагал).
+- Default `limit=30` (max 200). Cursor — страница старше последней строки.
+- `_rebuild_cumulative_bytes` по-прежнему ASC (лимит хранилища).
+
 ## 2026-08-17 — YouTube Topic titles «Song - Artist (Album)»
 
 - Баг: `Don't Stay - Linkin Park (Meteora)` → title=`Linkin Park (Meteora)`
@@ -196,13 +209,13 @@
 
 ### Инфраструктура на сервере (фактическая)
 
-- **SoundUK API:** `/var/www/sounduk_backend`
+- **Sounduk API:** `/var/www/sounduk_backend`
   - Процесс: `/var/www/sounduk_backend/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000 --workers 4`
   - **Нет** unit `sounduk.service` (systemd) — перезапуск вручную через `nohup` / `pkill`.
   - **Нет** копии в `/home/root/sounduk_backend` (только шаблон в `DEPLOY.md`).
 - **Nginx:** `/etc/nginx/sites-enabled/sounduk_backend`
   - `api.sounduk.ru` → `proxy_pass http://127.0.0.1:8000` (основной API)
-  - `/driver-api/` → `http://127.0.0.1:8010/` (отдельный сервис, не SoundUK)
+  - `/driver-api/` → `http://127.0.0.1:8010/` (отдельный сервис, не Sounduk)
 - **Другой сервис на том же хосте:** `/opt/driver_test_backend` (uvicorn `:8010`) — не удалялся.
 - **Сайт panop:** `/var/www/panop.sounduk.ru` — оставлен; удалён только бэкап `panop.sounduk.ru_backup_`.
 

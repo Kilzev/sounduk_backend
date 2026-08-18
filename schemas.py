@@ -153,6 +153,7 @@ class TrackResponse(BaseModel):
     created_at: datetime
     is_frozen: bool = False
     has_cover: bool = False
+    cover_url: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -178,6 +179,7 @@ class TrackResponse(BaseModel):
             "created_at": getattr(data, "created_at", None),
             "is_frozen": getattr(data, "is_frozen", False) or False,
             "has_cover": bool(cover_path),
+            "cover_url": None,
         }
 
 class TracksList(BaseModel):

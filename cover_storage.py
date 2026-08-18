@@ -8,9 +8,11 @@ from io import BytesIO
 import httpx
 from fastapi import HTTPException
 
-from s3_utils import S3_BUCKET_NAME, get_s3_client
+from cover_image import normalize_cover_bytes
+from s3_utils import S3_BUCKET_NAME, get_s3_client, presigned_url_async
 
 COVER_MAX_BYTES = 5 * 1024 * 1024
+COVER_PRESIGN_TTL = 6 * 3600
 
 _DATA_URL_RE = re.compile(
     r"^data:image/(?P<fmt>jpeg|jpg|png|webp|gif);base64,(?P<b64>.+)$",
@@ -76,12 +78,17 @@ def _upload_cover_bytes(cover_data: bytes, cover_key: str, content_type: str = "
     return cover_key
 
 
+def _normalized_upload(cover_data: bytes, cover_key: str) -> str:
+    body, content_type = normalize_cover_bytes(cover_data)
+    return _upload_cover_bytes(body, cover_key, content_type=content_type)
+
+
 def upload_track_cover_to_s3(cover_data: bytes, user_id: int, track_id: str) -> str:
-    return _upload_cover_bytes(cover_data, f"covers/{user_id}/{track_id}.jpg")
+    return _normalized_upload(cover_data, f"covers/{user_id}/{track_id}.webp")
 
 
 def upload_album_cover_to_s3(cover_data: bytes, user_id: int, album_id: str) -> str:
-    return _upload_cover_bytes(cover_data, f"album_covers/{user_id}/{album_id}.jpg")
+    return _normalized_upload(cover_data, f"album_covers/{user_id}/{album_id}.webp")
 
 
 def read_cover_from_s3(cover_key: str) -> bytes:
@@ -93,7 +100,28 @@ def read_cover_from_s3(cover_key: str) -> bytes:
 def delete_cover_from_s3(cover_key: str | None) -> None:
     if not cover_key or not str(cover_key).startswith(("covers/", "album_covers/")):
         return
-    try:
-        get_s3_client().delete_object(Bucket=S3_BUCKET_NAME, Key=str(cover_key))
-    except Exception:
-        pass
+    key = str(cover_key)
+    keys = {key}
+    if key.endswith(".jpg"):
+        keys.add(f"{key[:-4]}.webp")
+    elif key.endswith(".webp"):
+        keys.add(f"{key[:-5]}.jpg")
+    client = get_s3_client()
+    for item in keys:
+        try:
+            client.delete_object(Bucket=S3_BUCKET_NAME, Key=item)
+        except Exception:
+            pass
+
+
+async def presigned_cover_url(
+    cover_path: str | None,
+    *,
+    expiration: int = COVER_PRESIGN_TTL,
+) -> str | None:
+    if not cover_path:
+        return None
+    key = str(cover_path)
+    if not key.startswith(("covers/", "album_covers/")):
+        return None
+    return await presigned_url_async(key, expiration=expiration)
