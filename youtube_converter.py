@@ -72,6 +72,18 @@ def _build_ydl_opts(output_path: Path) -> dict:
     return opts
 
 
+def _ydl_meta_str(info: dict, *keys: str) -> str | None:
+    for key in keys:
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, list) and value:
+            first = value[0]
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+    return None
+
+
 def _resolve_mp3_output_path(base: Path) -> Path:
     direct = base.with_suffix(".mp3")
     if direct.is_file():
@@ -85,7 +97,9 @@ def _resolve_mp3_output_path(base: Path) -> Path:
     )
 
 
-def _download_mp3_sync(watch_url: str) -> tuple[Path, str | None, int, str | None, str | None]:
+def _download_mp3_sync(
+    watch_url: str,
+) -> tuple[Path, str | None, int, str | None, str | None, str | None]:
     base = TMP_DIR / uuid.uuid4().hex
     ydl_opts = _build_ydl_opts(base)
     info: dict | None = None
@@ -101,27 +115,21 @@ def _download_mp3_sync(watch_url: str) -> tuple[Path, str | None, int, str | Non
 
     title: str | None = None
     artist: str | None = None
+    album: str | None = None
     duration = 0
     if isinstance(info, dict):
-        raw_title = info.get("title")
-        if isinstance(raw_title, str) and raw_title.strip():
-            title = raw_title.strip()
-        for key in ("artist", "album_artist", "track_artist"):
-            value = info.get(key)
-            if isinstance(value, str) and value.strip():
-                artist = value.strip()
-                break
+        title = _ydl_meta_str(info, "track", "title")
+        artist = _ydl_meta_str(info, "artist", "album_artist", "track_artist")
         if not artist:
-            channel = info.get("channel") or info.get("uploader")
-            if isinstance(channel, str) and channel.strip():
-                artist = channel.strip()
+            artist = _ydl_meta_str(info, "channel", "uploader")
+        album = _ydl_meta_str(info, "album")
         try:
             duration = max(0, int(info.get("duration") or 0))
         except (TypeError, ValueError):
             duration = 0
 
     thumbnail_url = _pick_thumbnail_url(info) if isinstance(info, dict) else None
-    return _resolve_mp3_output_path(base), title, duration, artist, thumbnail_url
+    return _resolve_mp3_output_path(base), title, duration, artist, thumbnail_url, album
 
 
 def _pick_thumbnail_url(info: dict) -> str | None:
@@ -151,18 +159,18 @@ def _cleanup_path(path: Path) -> None:
 
 async def download_youtube_mp3_with_meta(
     watch_url: str,
-) -> tuple[bytes, str | None, int, str | None, str | None]:
-    path, title, duration, artist, thumbnail_url = await asyncio.to_thread(
+) -> tuple[bytes, str | None, int, str | None, str | None, str | None]:
+    path, title, duration, artist, thumbnail_url, album = await asyncio.to_thread(
         _download_mp3_sync, watch_url
     )
     try:
-        return path.read_bytes(), title, duration, artist, thumbnail_url
+        return path.read_bytes(), title, duration, artist, thumbnail_url, album
     finally:
         _cleanup_path(path)
 
 
 async def download_youtube_mp3_bytes(watch_url: str) -> bytes:
-    audio_bytes, _, _, _, _ = await download_youtube_mp3_with_meta(watch_url)
+    audio_bytes, *_ = await download_youtube_mp3_with_meta(watch_url)
     return audio_bytes
 
 

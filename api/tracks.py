@@ -119,6 +119,72 @@ _YOUTUBE_PLAYLIST_VIDEO_ID_RE = re.compile(r'"videoId":"([a-zA-Z0-9_-]{11})"')
 JOB_ITEM_AUTO_RETRIES = max(2, int(os.getenv("JOB_ITEM_AUTO_RETRIES", "4")))
 
 
+_YOUTUBE_IMPORT_ERROR_TEXT = {
+    "geo": "Недоступно в регионе прокси (блокировка YouTube по жалобе государства)",
+    "copyright": "Заблокировано правообладателем на YouTube",
+    "unavailable": "Ролик недоступен на YouTube",
+    "age": "Возрастное ограничение YouTube",
+    "private": "Приватное видео YouTube",
+}
+
+
+def _classify_youtube_import_error(message: str) -> str | None:
+    """geo/copyright раньше generic unavailable: yt-dlp часто пишет оба в одном тексте."""
+    lowered = (message or "").lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "country domain",
+            "legal complaint from the government",
+            "not available on this country",
+            "not made this video available in your country",
+            "the uploader has not made this video available",
+            "недоступно в регионе",
+            "жалобе государства",
+        )
+    ):
+        return "geo"
+    if any(
+        marker in lowered
+        for marker in (
+            "claimed content",
+            "blocked due to the claimed",
+            "правообладател",
+            "заблокировано правообладателем",
+        )
+    ):
+        return "copyright"
+    if any(
+        marker in lowered
+        for marker in (
+            "sign in to confirm",
+            "age-restricted",
+            "inappropriate for some users",
+            "возрастное ограничение",
+        )
+    ):
+        return "age"
+    if "private video" in lowered or "приватное видео" in lowered:
+        return "private"
+    if any(
+        marker in lowered
+        for marker in (
+            "video unavailable",
+            "this video is not available",
+            "ролик недоступен",
+        )
+    ):
+        return "unavailable"
+    return None
+
+
+def _humanize_youtube_import_error(message: str) -> str:
+    kind = _classify_youtube_import_error(message)
+    if kind:
+        return _YOUTUBE_IMPORT_ERROR_TEXT[kind]
+    return (message or "")[:500]
+
+
 def _format_import_job_error(exc: BaseException) -> str:
     if isinstance(exc, HTTPException):
         detail = exc.detail
@@ -134,27 +200,21 @@ def _format_import_job_error(exc: BaseException) -> str:
             text = str(detail.get("detail") or detail)
         else:
             text = str(detail)
-        return (text or f"HTTP {exc.status_code}")[:500]
-    if isinstance(exc, httpx.HTTPError):
+        text = text or f"HTTP {exc.status_code}"
+    elif isinstance(exc, httpx.HTTPError):
         text = f"{type(exc).__name__}: {exc}".strip()
-        return text[:500]
-    text = str(exc).strip()
-    return (text or type(exc).__name__)[:500]
+    else:
+        text = str(exc).strip() or type(exc).__name__
+    return _humanize_youtube_import_error(text)[:500]
 
 
 def _is_non_retryable_import_error(message: str) -> bool:
-    lowered = message.lower()
+    if _classify_youtube_import_error(message):
+        return True
+    lowered = (message or "").lower()
     markers = (
         "недостаточно места",
         "storage",
-        "private video",
-        "video unavailable",
-        "sign in to confirm",
-        "age-restricted",
-        "inappropriate for some users",
-        "this video is not available",
-        "not made this video available in your country",
-        "the uploader has not made this video available",
         "ожидается ссылка",
         "нет источника аудио",
     )
@@ -759,6 +819,11 @@ _VIDEO_TITLE_MARKERS = (
     " feat.",
 )
 
+# Topic / art-track: "Don't Stay - Linkin Park (Meteora)"
+_TOPIC_TITLE_RE = re.compile(
+    r"^(?P<title>.+?) - (?P<artist>.+?) \((?P<album>[^)]+)\)\s*$"
+)
+
 
 def _looks_like_youtube_video_title(text: str) -> bool:
     lowered = text.lower()
@@ -767,30 +832,62 @@ def _looks_like_youtube_video_title(text: str) -> bool:
     return ("[" in text or "(" in text) and len(text) > 32
 
 
-def _title_artist_from_youtube_title(raw_title: str) -> tuple[str, str]:
-    """Возвращает (track_title, artist). YouTube: и «Artist - Song», и «Song - Artist»."""
+def _paren_is_video_tag(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in _VIDEO_TITLE_MARKERS)
+
+
+def _title_artist_from_youtube_title(
+    raw_title: str,
+    *,
+    hint_artist: str | None = None,
+) -> tuple[str, str, str | None]:
+    """Возвращает (track_title, artist, album).
+
+    YouTube Topic: «Song - Artist (Album)».
+    Клипы: «Artist - Song» или «Song (Official Music Video)».
+    """
     title = raw_title.strip() or "Unknown title"
+    hint = (hint_artist or "").strip() or None
+
+    topic = _TOPIC_TITLE_RE.match(title)
+    if topic and not _paren_is_video_tag(topic.group("album")):
+        return (
+            topic.group("title").strip(),
+            topic.group("artist").strip(),
+            topic.group("album").strip(),
+        )
+
     if " - " not in title:
-        return title, "Unknown artist"
+        return title, (hint or "Unknown artist"), None
 
     left, right = (part.strip() for part in title.split(" - ", 1))
     if not left or not right:
-        return title, "Unknown artist"
+        return title, (hint or "Unknown artist"), None
+
+    if hint:
+        hint_l = hint.lower()
+        right_l = right.lower()
+        if right_l == hint_l or right_l.startswith(hint_l + " ") or right_l.startswith(hint_l + "("):
+            album = None
+            if right_l.startswith(hint_l) and right.endswith(")") and "(" in right:
+                album = right[right.rfind("(") + 1 : -1].strip() or None
+                if album and _paren_is_video_tag(album):
+                    album = None
+            return left, hint, album
 
     left_video = _looks_like_youtube_video_title(left)
     right_video = _looks_like_youtube_video_title(right)
 
     if left_video and not right_video:
-        return left, right
+        return left, right, None
     if right_video and not left_video:
-        return right, left
+        return right, left, None
 
     if len(right) <= 48 and len(left) > len(right) + 8 and not right_video:
-        return left, right
-    if len(left) <= 48 and len(right) > len(left) + 8 and not left_video:
-        return right, left
+        return left, right, None
 
-    return right, left
+    return right, left, None
 
 
 async def _build_youtube_media_item(
@@ -804,8 +901,10 @@ async def _build_youtube_media_item(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Ожидается ссылка на YouTube-видео")
 
     media: dict[str, Any] = {"duration": 0}
-    
-    audio_bytes, yt_title, yt_duration, yt_artist, yt_thumbnail = await download_youtube_mp3_with_meta(watch_url)
+
+    audio_bytes, yt_title, yt_duration, yt_artist, yt_thumbnail, yt_album = (
+        await download_youtube_mp3_with_meta(watch_url)
+    )
     media["audio_bytes"] = audio_bytes
     if yt_duration > 0:
         media["duration"] = yt_duration
@@ -814,15 +913,23 @@ async def _build_youtube_media_item(
 
     resolved_title = _sanitize_meta_value(title)
     resolved_artist = _sanitize_meta_value(artist) or _sanitize_meta_value(yt_artist)
-    if not resolved_title or not resolved_artist:
-        title_source = yt_title or await _fetch_youtube_oembed_title(watch_url)
-        parsed_title, parsed_artist = _title_artist_from_youtube_title(title_source or "Unknown title")
-        resolved_title = resolved_title or parsed_title
+    resolved_album = _sanitize_meta_value(album) or _sanitize_meta_value(yt_album)
+    title_source = yt_title or await _fetch_youtube_oembed_title(watch_url)
+    if title_source and (
+        not resolved_title or not resolved_artist or " - " in title_source
+    ):
+        parsed_title, parsed_artist, parsed_album = _title_artist_from_youtube_title(
+            title_source,
+            hint_artist=resolved_artist,
+        )
+        if not resolved_title or resolved_title == _sanitize_meta_value(title_source):
+            resolved_title = parsed_title
         resolved_artist = resolved_artist or parsed_artist
+        resolved_album = resolved_album or parsed_album
 
-    media["title"] = resolved_title
-    media["artist"] = resolved_artist
-    media["album"] = _sanitize_meta_value(album)
+    media["title"] = resolved_title or "Unknown title"
+    media["artist"] = resolved_artist or "Unknown artist"
+    media["album"] = resolved_album
     return media
 
 
@@ -1178,8 +1285,19 @@ async def _create_track_from_remote(
     parsed_meta = _extract_audio_metadata(raw_bytes, source_name)
     duration = item.get("duration") or parsed_meta.get("duration") or 0
     duration = max(0, int(duration))
-    if _sanitize_meta_value(parsed_meta.get("title")):
-        title = _sanitize_meta_value(parsed_meta.get("title")) or title
+    id3_title = _sanitize_meta_value(parsed_meta.get("title"))
+    if id3_title:
+        if " - " in id3_title:
+            parsed_title, parsed_artist, parsed_album = _title_artist_from_youtube_title(
+                id3_title,
+                hint_artist=_sanitize_meta_value(artist),
+            )
+            title = parsed_title
+            if not _sanitize_meta_value(item.get("artist")):
+                artist = parsed_artist
+            parsed_meta["album"] = parsed_meta.get("album") or parsed_album
+        else:
+            title = id3_title
     if _sanitize_meta_value(parsed_meta.get("artist")):
         artist = _sanitize_meta_value(parsed_meta.get("artist")) or artist
     album_name = _sanitize_meta_value(item.get("album")) or _sanitize_meta_value(parsed_meta.get("album"))

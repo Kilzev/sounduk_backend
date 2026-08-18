@@ -1,5 +1,28 @@
 # Change Log
 
+## 2026-08-17 — YouTube Topic titles «Song - Artist (Album)»
+
+- Баг: `Don't Stay - Linkin Park (Meteora)` → title=`Linkin Park (Meteora)`
+  (эвристика «более длинная правая часть = название»).
+- Topic-regex + `hint_artist` с канала; yt-dlp `track`/`album`; ID3 с « - »
+  прогоняется через тот же парсер.
+
+## 2026-08-17 — YouTube import: geo/copyright fail-fast
+
+- `_classify_youtube_import_error`: geo (country domain / government complaint)
+  и copyright (claimed content / WMG) **раньше** generic `video unavailable`.
+- Такие item'ы сразу `failed`, без job-retry (раньше «страна» без префикса
+  Unavailable ретраилась до 4 раз × yt-dlp clients → минуты «зависания»).
+- В БД/UI — короткий текст; клиент мапит те же маркеры в i18n.
+
+## 2026-08-13 — YouTube SOCKS jump after VPS rebuild
+
+- Host `77.110.107.73` again up (Ubuntu 22.04, ~9d). Tunnel key already in `authorized_keys`.
+- API `sounduk-yt-proxy` on `178.72.184.68` → `socks5h://127.0.0.1:10801` (exit IP = jump host).
+- Smoke `eVTXPUF4Oz4`: yt-dlp **2026.07.04** + FFmpeg → MP3 **5.0 MB** ~12s.
+- Jump disk was 92% (`/var/log/journal`); vacuumed ~848 MB → **77% / 2.2 GB free**.
+- App import still needs `allow_youtube_import` (1/16 users on at check).
+
 ## 2026-08-12 — Per-account YouTube import flag
 
 - `users.allow_youtube_import` (default false); в `UserResponse` / admin PATCH.
