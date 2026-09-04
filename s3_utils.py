@@ -30,16 +30,22 @@ S3_MAX_ATTEMPTS = max(2, int(os.getenv("S3_MAX_ATTEMPTS", "4")))
 S3_UPLOAD_MAX_ATTEMPTS = max(2, int(os.getenv("S3_UPLOAD_MAX_ATTEMPTS", "5")))
 S3_UPLOAD_RETRY_BASE_SEC = max(1, int(os.getenv("S3_UPLOAD_RETRY_BASE_SEC", "2")))
 
+# Virtual-hosted: https://{bucket}.s3.{region}.storage.selcloud.ru/...
+# Path-style URLs do not get Selectel CORS headers (OPTIONS 405).
+_S3_ADDRESSING = {"addressing_style": "virtual"}
+
 S3_CLIENT_CONFIG = Config(
     connect_timeout=S3_CONNECT_TIMEOUT,
     read_timeout=S3_READ_TIMEOUT,
     retries={"max_attempts": S3_MAX_ATTEMPTS, "mode": "standard"},
+    s3=_S3_ADDRESSING,
 )
 
 S3_UPLOAD_CLIENT_CONFIG = Config(
     connect_timeout=S3_CONNECT_TIMEOUT,
     read_timeout=S3_UPLOAD_READ_TIMEOUT,
     retries={"max_attempts": S3_MAX_ATTEMPTS, "mode": "adaptive"},
+    s3=_S3_ADDRESSING,
 )
 
 

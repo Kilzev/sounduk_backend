@@ -1,5 +1,12 @@
 # Change Log
 
+## 2026-09-04 — Web presigned S3 + apex→www (keep live DB)
+
+- Live SQLite **не** трогали: snapshot `backups_local/database_pre_presign_www_20260904_180018.db`; sha совпал после `systemctl restart sounduk`; journal `keep local`; **27 users / 697 tracks / 14 albums**.
+- Деплой только `s3_utils.py` (virtual-hosted presign). `database.db` / `uploads/` не копировали.
+- Nginx `sounduk.ru` → `301 https://www.sounduk.ru$request_uri` (CORS allowlist без apex). Backup `sites-available/sounduk.backup.*`.
+- Web build на `193.233.84.58:/var/www/sounduk` без `--delete` legal html (`privacy.html` и т.д. на месте).
+
 ## 2026-08-18 — Deploy API+web (keep live DB)
 
 - Live SQLite **не** трогали: snapshot `backups_local/database_pre_deploy_20260818_161344.db`; после `systemctl restart sounduk` — `keep local`, **569 tracks / 25 users / 8 albums**.
