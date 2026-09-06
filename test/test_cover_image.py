@@ -19,3 +19,9 @@ def test_normalize_cover_bytes_webp_and_square_cap():
     decoded = Image.open(BytesIO(body))
     assert decoded.size[0] == decoded.size[1]
     assert decoded.size[0] <= 1000
+
+
+def test_normalize_cover_bytes_pad_keeps_banner_without_cropping():
+    body, _ = normalize_cover_bytes(_png_bytes(300, 80), square="pad")
+    decoded = Image.open(BytesIO(body))
+    assert decoded.size == (300, 300)

@@ -182,6 +182,58 @@ def test_list_returns_all_stations(client, admin_token):
     assert names == ["A FM", "B FM", "C FM"]
 
 
+# 1x1 PNG
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def test_catalog_cover_create_and_update(client, admin_token, mock_s3_covers):
+    r = client.post(
+        "/api/radio/stations",
+        json={
+            "name": "Cover FM",
+            "stream_url": "https://cover.fm/stream",
+            "cover_data": _TINY_PNG_B64,
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 201, r.text
+    data = r.json()
+    assert data["cover_url"]
+    assert data["cover_url"].startswith("https://s3.test/radio_covers/catalog/")
+    station_id = data["id"]
+    assert any(k.startswith("radio_covers/catalog/") for k in mock_s3_covers)
+
+    r = client.put(
+        f"/api/radio/stations/{station_id}",
+        json={"clear_cover": True},
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["cover_url"] is None
+
+
+def test_catalog_cover_url_download(client, admin_token, monkeypatch):
+    async def fake_download(url: str) -> bytes:
+        assert url == "https://example.com/logo.png"
+        import base64
+        return base64.b64decode(_TINY_PNG_B64)
+
+    monkeypatch.setattr("cover_storage.download_cover_by_url", fake_download)
+    r = client.post(
+        "/api/radio/stations",
+        json={
+            "name": "Url FM",
+            "stream_url": "https://url.fm/stream",
+            "cover_url": "https://example.com/logo.png",
+        },
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["cover_url"]
+
+
 def test_delete_nonexistent(client, admin_token):
     """Deleting a nonexistent station returns 404."""
     r = client.delete(

@@ -336,6 +336,8 @@ class RadioStationCreate(BaseModel):
     stream_url: str
     genre: Optional[str] = None
     website: Optional[str] = None
+    cover_data: Optional[str] = None
+    cover_url: Optional[str] = None
 
 
 class RadioStationUpdate(BaseModel):
@@ -343,6 +345,9 @@ class RadioStationUpdate(BaseModel):
     stream_url: Optional[str] = None
     genre: Optional[str] = None
     website: Optional[str] = None
+    cover_data: Optional[str] = None
+    cover_url: Optional[str] = None
+    clear_cover: Optional[bool] = None
 
 
 class RadioStationResponse(BaseModel):
@@ -351,6 +356,7 @@ class RadioStationResponse(BaseModel):
     stream_url: str
     genre: Optional[str] = None
     website: Optional[str] = None
+    cover_url: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
@@ -366,7 +372,7 @@ class RadioStationListResponse(BaseModel):
 # ─── User Radio Stations (per-account) ───
 
 class UserRadioStationItem(BaseModel):
-    """Элемент списка при PUT-замене пользовательских станций."""
+    """Элемент списка при PUT-замене пользовательских станций (без cover_data)."""
     id: Optional[str] = None
     name: str
     stream_url: str

@@ -1,10 +1,12 @@
-"""Normalize cover images for S3: square crop, max side, WebP."""
+"""Normalize cover images for S3: square crop/pad, max side, WebP."""
 from __future__ import annotations
 
 from io import BytesIO
 
 COVER_MAX_SIDE = 1000
 WEBP_QUALITY = 80
+# Vinyl labels sit on a dark disc; padding banners with white cuts a halo.
+RADIO_PAD_BG = (18, 18, 22)
 
 
 def normalize_cover_bytes(
@@ -12,8 +14,12 @@ def normalize_cover_bytes(
     *,
     max_side: int = COVER_MAX_SIDE,
     quality: int = WEBP_QUALITY,
+    square: str = "crop",
 ) -> tuple[bytes, str]:
-    """Return (body, content_type). Falls back to original JPEG bytes if decode fails."""
+    """Return (body, content_type). Falls back to original JPEG bytes if decode fails.
+
+    square: ``crop`` (albums/tracks) or ``pad`` (radio logos / banners).
+    """
     if not data:
         raise ValueError("empty cover")
 
@@ -29,10 +35,11 @@ def normalize_cover_bytes(
     except Exception:
         return data, "image/jpeg"
 
+    flatten_bg = RADIO_PAD_BG if square == "pad" else (255, 255, 255)
     if image.mode in {"P", "PA"}:
         image = image.convert("RGBA")
     if image.mode == "RGBA":
-        background = Image.new("RGB", image.size, (255, 255, 255))
+        background = Image.new("RGB", image.size, flatten_bg)
         background.paste(image, mask=image.split()[-1])
         image = background
     elif image.mode != "RGB":
@@ -40,10 +47,16 @@ def normalize_cover_bytes(
 
     width, height = image.size
     if width > 0 and height > 0 and width != height:
-        side = min(width, height)
-        left = (width - side) // 2
-        top = (height - side) // 2
-        image = image.crop((left, top, left + side, top + side))
+        if square == "pad":
+            side = max(width, height)
+            padded = Image.new("RGB", (side, side), flatten_bg)
+            padded.paste(image, ((side - width) // 2, (side - height) // 2))
+            image = padded
+        else:
+            side = min(width, height)
+            left = (width - side) // 2
+            top = (height - side) // 2
+            image = image.crop((left, top, left + side, top + side))
 
     side = image.size[0]
     if side > max_side:

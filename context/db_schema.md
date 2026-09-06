@@ -96,6 +96,41 @@ CREATE TABLE albums (
 
 ---
 
+### 3b. **radio_stations** — глобальный каталог радио (админ)
+
+```sql
+CREATE TABLE radio_stations (
+    id VARCHAR PRIMARY KEY,
+    name VARCHAR NOT NULL,
+    stream_url VARCHAR NOT NULL,
+    genre VARCHAR NULL,
+    website VARCHAR NULL,
+    cover_path VARCHAR NULL,                   -- S3 radio_covers/catalog/{id}.webp
+    created_at DATETIME,
+    updated_at DATETIME
+);
+```
+
+### 3c. **user_radio_stations** — станции пользователя
+
+```sql
+CREATE TABLE user_radio_stations (
+    id VARCHAR PRIMARY KEY,
+    user_id INTEGER NOT NULL FOREIGN KEY,
+    name VARCHAR NOT NULL,
+    stream_url VARCHAR NOT NULL,
+    genre VARCHAR NULL,
+    website VARCHAR NULL,
+    cover_path VARCHAR NULL,                   -- S3 radio_covers/{user_id}/{id}.webp
+    created_at DATETIME,
+    updated_at DATETIME
+);
+```
+
+API отдаёт presigned `cover_url`, не сырой `cover_path`.
+
+---
+
 ### 4. **payments** — Платежи (YooKassa)
 
 ```sql

@@ -87,6 +87,16 @@ def mock_s3_covers():
         store[key] = data
         return key
 
+    def _upload_user_radio(data: bytes, user_id: int, station_id: str) -> str:
+        key = f"radio_covers/{user_id}/{station_id}.webp"
+        store[key] = data
+        return key
+
+    def _upload_catalog_radio(data: bytes, station_id: str) -> str:
+        key = f"radio_covers/catalog/{station_id}.webp"
+        store[key] = data
+        return key
+
     def _read(key: str) -> bytes:
         if key not in store:
             raise FileNotFoundError(key)
@@ -96,10 +106,18 @@ def mock_s3_covers():
         if key:
             store.pop(str(key), None)
 
+    async def _presign(cover_path, expiration=6 * 3600):
+        if not cover_path:
+            return None
+        return f"https://s3.test/{cover_path}"
+
     with patch("cover_storage.upload_album_cover_to_s3", side_effect=_upload_album), \
          patch("cover_storage.upload_track_cover_to_s3", side_effect=_upload_track), \
+         patch("cover_storage.upload_user_radio_cover", side_effect=_upload_user_radio), \
+         patch("cover_storage.upload_catalog_radio_cover", side_effect=_upload_catalog_radio), \
          patch("cover_storage.read_cover_from_s3", side_effect=_read), \
          patch("cover_storage.delete_cover_from_s3", side_effect=_delete), \
+         patch("cover_storage.presigned_cover_url", side_effect=_presign), \
          patch("api.tracks.upload_track_cover_to_s3", side_effect=_upload_track), \
          patch("api.tracks.delete_cover_from_s3", side_effect=_delete):
         yield store

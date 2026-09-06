@@ -1,10 +1,20 @@
 # Журнал задач и изменений API
 
-**Последнее обновление:** 2026-08-06
+**Последнее обновление:** 2026-09-06
 
 ---
 
 ## 📝 Статус текущих работ
+
+### ✅ ЗАВЕРШЕНО (2026-09-06): Radio covers + catalog probe
+
+- ✅ Probe 148→147 (RADIO SPB1 Trance 404). Backup `database_radio_cleanup_20260906_075851.db`
+- ✅ `cover_path` на `radio_stations` / `user_radio_stations`; S3 `radio_covers/`
+- ✅ PUT `/api/users/radio/stations/{id}` для обложки за аккаунтом; bulk PUT сохраняет `cover_path`
+- ✅ `seed_radio_covers.py` вшивает логотипы каталога
+- ✅ 2026-09-06: vinyl blur — seed `--upgrade` (Record 600px, reject <128px, pad banners); ADB screenshot 90's Eurodance был 16×16 Google s2
+- ✅ 2026-09-06: Retro FM HLS `hls-01-regions.emgsound.ru/12_msk/playlist.m3u8` — Android DVR не умеет m3u8; каталог обновлён, плеер для HLS идёт в ExoPlayer
+- Док: [`radio_catalog_cleanup_2026-09-06.md`](./radio_catalog_cleanup_2026-09-06.md)
 
 ### ✅ ЗАВЕРШЕНО (2026-08-06): Radio catalog cleanup
 

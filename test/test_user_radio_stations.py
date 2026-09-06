@@ -178,3 +178,74 @@ def test_cascade_on_user_delete(client, admin_token):
     db = TestingSessionLocal()
     assert db.query(models.UserRadioStation).filter_by(user_id=user_id).count() == 0
     db.close()
+
+
+_TINY_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+)
+
+
+def test_user_station_cover_put_by_id(client, test_user_token, mock_s3_covers):
+    r = client.post(
+        "/api/users/radio/stations",
+        json={
+            "name": "My Cover FM",
+            "stream_url": "https://mycover.fm/stream",
+            "cover_data": _TINY_PNG_B64,
+        },
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert r.status_code == 201, r.text
+    data = r.json()
+    station_id = data["id"]
+    assert data["cover_url"]
+    assert "/radio_covers/" in data["cover_url"]
+
+    r = client.put(
+        f"/api/users/radio/stations/{station_id}",
+        json={"name": "Renamed FM"},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["name"] == "Renamed FM"
+    assert r.json()["cover_url"]
+
+    token2 = register_and_login(client, "cover_other_user", "pass12345")
+    r = client.put(
+        f"/api/users/radio/stations/{station_id}",
+        json={"clear_cover": True},
+        headers={"Authorization": f"Bearer {token2}"},
+    )
+    assert r.status_code == 404
+
+
+def test_bulk_put_preserves_cover_path(client, test_user_token, mock_s3_covers):
+    r = client.post(
+        "/api/users/radio/stations",
+        json={
+            "name": "Keep Cover",
+            "stream_url": "https://keepcover.fm",
+            "cover_data": _TINY_PNG_B64,
+        },
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert r.status_code == 201, r.text
+    station_id = r.json()["id"]
+    old_cover = r.json()["cover_url"]
+
+    r = client.put(
+        "/api/users/radio/stations",
+        json={
+            "stations": [
+                {
+                    "id": station_id,
+                    "name": "Keep Cover",
+                    "stream_url": "https://keepcover.fm",
+                }
+            ]
+        },
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert r.status_code == 200
+    assert r.json()["total"] == 1
+    assert r.json()["stations"][0]["cover_url"] == old_cover

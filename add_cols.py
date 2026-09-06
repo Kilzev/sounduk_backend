@@ -17,6 +17,8 @@ c = conn.cursor()
 add_col_if_not_exists(c, "users", "premium_expires_at", "DATETIME")
 add_col_if_not_exists(c, "users", "recovery_code_enc", "TEXT")
 add_col_if_not_exists(c, "users", "allow_youtube_import", "BOOLEAN DEFAULT 0")
+add_col_if_not_exists(c, "radio_stations", "cover_path", "TEXT")
+add_col_if_not_exists(c, "user_radio_stations", "cover_path", "TEXT")
 
 conn.commit()
 conn.close()
