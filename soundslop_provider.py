@@ -67,10 +67,20 @@ def _build_payload(
     """Тело запроса под модель. Поля Stable Audio 3 на fal;
     при смене модели через env сверить со схемой модели в доке fal."""
     if mode == "text":
+        # Stable Audio 3: поле длины — duration (1..380). seconds_total модель
+        # молча игнорирует и отдаёт дефолт 30 сек.
+        text = prompt
+        negative = ""
+        if instrumental:
+            text = f"{prompt}. Instrumental only, no vocals."
+            negative = "vocals, singing, speech, lyrics"
         return {
-            "prompt": prompt,
-            "seconds_total": duration_sec,
-            # instrumental поддерживается не всеми моделями — мягкий хинт в промпте
+            "prompt": text,
+            "duration": duration_sec,
+            "negative_prompt": negative,
+            "enable_prompt_expansion": True,
+            "output_format": "mp3",
+            "bitrate": "192k",
         }
     # audio / extend: audio-to-audio (extend v1.1 — та же модель-семья)
     payload: dict[str, Any] = {
