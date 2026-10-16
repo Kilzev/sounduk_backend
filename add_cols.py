@@ -20,6 +20,7 @@ add_col_if_not_exists(c, "users", "allow_youtube_import", "BOOLEAN DEFAULT 0")
 add_col_if_not_exists(c, "radio_stations", "cover_path", "TEXT")
 add_col_if_not_exists(c, "user_radio_stations", "cover_path", "TEXT")
 add_col_if_not_exists(c, "users", "tokens_balance", "INTEGER DEFAULT 0")
+add_col_if_not_exists(c, "users", "library_revision", "INTEGER DEFAULT 1")
 
 conn.commit()
 conn.close()

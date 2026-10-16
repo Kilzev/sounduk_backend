@@ -1,4 +1,5 @@
 # soundslop_provider.py — адаптер провайдера генерации музыки (fal.ai)
+import asyncio
 #
 # Дизайн (context/soundslop_design.md §3):
 # - модель — конфигом (env), смена без правок кода;
@@ -100,21 +101,18 @@ def _extract_audio_url(data: Any) -> Optional[str]:
     return None
 
 
-async def submit_generation(
+def _submit_generation_sync(
     *,
     mode: str,
     prompt: str,
     duration_sec: int,
     instrumental: bool,
-    source_audio_url: Optional[str] = None,
-    strength: Optional[float] = None,
-    timeout_sec: float = 600.0,
+    source_audio_url: Optional[str],
+    strength: Optional[float],
+    timeout_sec: float,
 ) -> str:
-    """Отправить генерацию в fal и дождаться результата.
-
-    Возвращает URL готового аудио. Бросает ProviderNotConfigured /
-    ProviderError — воркер переводит job в failed + refund.
-    """
+    """Sync-клиент: httpx/anyio под uvloop зависает и на POST в fal.run,
+    и на GET с CDN fal.media (воспроизведено 2026-10-16)."""
     model = _model_for(mode)
     payload = _build_payload(
         mode=mode,
@@ -135,10 +133,8 @@ async def submit_generation(
             break
         keys_tried.add(key)
         try:
-            async with httpx.AsyncClient(
-                timeout=timeout_sec, proxy=proxy
-            ) as client:
-                resp = await client.post(
+            with httpx.Client(timeout=timeout_sec, proxy=proxy) as client:
+                resp = client.post(
                     f"{_FAL_BASE}/{model}",
                     json=payload,
                     headers={
@@ -167,5 +163,35 @@ async def submit_generation(
             provider_logger.warning("fal http error: %s", exc)
 
     if last_error:
-        raise ProviderError(f"fal network error: {last_error}")
+        raise ProviderError(
+            f"fal network error: {type(last_error).__name__}: {last_error}"
+        )
     raise ProviderError("fal: all provider keys rate-limited")
+
+
+async def submit_generation(
+    *,
+    mode: str,
+    prompt: str,
+    duration_sec: int,
+    instrumental: bool,
+    source_audio_url: Optional[str] = None,
+    strength: Optional[float] = None,
+    timeout_sec: float = 600.0,
+) -> str:
+    """Отправить генерацию в fal и дождаться результата.
+
+    Возвращает URL готового аудио. Бросает ProviderNotConfigured /
+    ProviderError — воркер переводит job в failed + refund.
+    HTTP уходит в поток (см. _submit_generation_sync).
+    """
+    return await asyncio.to_thread(
+        _submit_generation_sync,
+        mode=mode,
+        prompt=prompt,
+        duration_sec=duration_sec,
+        instrumental=instrumental,
+        source_audio_url=source_audio_url,
+        strength=strength,
+        timeout_sec=timeout_sec,
+    )

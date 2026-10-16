@@ -4,6 +4,7 @@
 # задачу в очередь (202), генерация идёт здесь. При любой ошибке —
 # fail + автоматический refund потраченных токенов (идемпотентно по
 # ref_id "{job_id}:refund").
+import asyncio
 import logging
 import os
 import uuid
@@ -29,9 +30,12 @@ _AUDIO_EXT_BY_MIME = {
 }
 
 
-def _fail_and_refund(db, job: models.SoundSlopJob, error: str) -> None:
+def _fail_and_refund(db, job: models.SoundSlopJob, exc: Exception) -> None:
+    # str() у httpx/asyncio timeout-исключений пуст — сохраняем тип ошибки,
+    # иначе в job.error попадает пустая строка и диагностика слепнет.
+    error = str(exc) or type(exc).__name__
     job.status = "failed"
-    job.error = error[:1000]
+    job.error = f"{type(exc).__name__}: {error}"[:1000]
     db.add(job)
     db.commit()
     user = db.query(models.User).filter(models.User.id == job.user_id).first()
@@ -46,12 +50,19 @@ def _fail_and_refund(db, job: models.SoundSlopJob, error: str) -> None:
     worker_logger.warning("soundslop job=%s failed: %s", job.id, error)
 
 
-async def _download_audio(url: str) -> tuple[bytes, str]:
-    async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
-        resp = await client.get(url)
+def _download_audio_sync(url: str) -> tuple[bytes, str]:
+    with httpx.Client(timeout=300.0, follow_redirects=True) as client:
+        resp = client.get(url)
         resp.raise_for_status()
         content_type = resp.headers.get("content-type", "").split(";")[0].strip()
         return resp.content, _AUDIO_EXT_BY_MIME.get(content_type, ".mp3")
+
+
+async def _download_audio(url: str) -> tuple[bytes, str]:
+    # ВАЖНО: скачиваем в потоке sync-клиентом. httpx/anyio под uvloop
+    # (uvicorn[standard] в проде) зависает на чтении с CDN fal.media —
+    # воспроизведено 2026-10-16 (default loop: 2с, uvloop: ReadTimeout).
+    return await asyncio.to_thread(_download_audio_sync, url)
 
 
 async def process_job(job_id: str) -> None:
@@ -136,7 +147,7 @@ async def process_job(job_id: str) -> None:
                 .first()
             )
             if job is not None:
-                _fail_and_refund(db, job, str(exc))
+                _fail_and_refund(db, job, exc)
     finally:
         db.close()
 
