@@ -32,9 +32,12 @@ def test_list_empty_catalog(client, test_user_token):
 
 
 def test_list_unauthenticated(client):
-    """GET /api/radio/stations without token returns 401."""
+    """GET /api/radio/stations is public: no account required."""
     r = client.get("/api/radio/stations")
-    assert r.status_code == 401
+    assert r.status_code == 200
+    data = r.json()
+    assert data["stations"] == []
+    assert data["total"] == 0
 
 
 def test_create_as_admin(client, admin_token):

@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from auth_utils import get_current_admin_user, get_current_user
+from auth_utils import get_current_admin_user
 from database import get_db
 import cover_storage
 import models
@@ -49,10 +49,9 @@ def _validate_name_url(name: str, stream_url: str) -> None:
 
 @router.get("/stations", response_model=schemas.RadioStationListResponse)
 async def list_stations(
-    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Возвращает полный глобальный каталог радиостанций."""
+    """Публичный каталог радиостанций. Аккаунт не нужен."""
     stations = (
         db.query(models.RadioStation)
         .order_by(models.RadioStation.name.asc())
