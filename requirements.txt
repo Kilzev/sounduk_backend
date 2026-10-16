@@ -14,3 +14,4 @@ mutagen
 python-dotenv
 pillow>=10.4.0
 yt-dlp>=2024.1.0
+boto3

@@ -382,3 +382,67 @@ class UserRadioStationItem(BaseModel):
 
 class UserRadioStationReplaceRequest(BaseModel):
     stations: list[UserRadioStationItem]
+
+
+# ─── SoundSlop: токены ───
+
+class TokenBalanceResponse(BaseModel):
+    balance: int
+    cost_per_generation: int
+    max_duration_sec: int
+    tokens_per_gb: int
+
+
+class AdRewardRequest(BaseModel):
+    ad_unit_id: Optional[str] = None
+    idempotency_key: str
+
+
+class AdRewardResponse(BaseModel):
+    balance: int
+    granted: int
+
+
+class RedeemStorageRequest(BaseModel):
+    gb: int
+
+
+class RedeemStorageResponse(BaseModel):
+    balance: int
+    storage_limit: int
+    spent: int
+
+
+# ─── SoundSlop: генерация ───
+
+from typing import Literal
+
+
+class SoundSlopGenerateRequest(BaseModel):
+    mode: Literal["text", "audio", "extend"] = "text"
+    prompt: str
+    duration_sec: Optional[int] = None
+    instrumental: bool = False
+    source_track_id: Optional[str] = None
+    strength: Optional[float] = None
+
+
+class SoundSlopGenerateResponse(BaseModel):
+    job_id: str
+    status: str
+    balance: int
+
+
+class SoundSlopJobResponse(BaseModel):
+    job_id: str
+    mode: str
+    prompt: str
+    duration_sec: int
+    instrumental: bool
+    source_track_id: Optional[str] = None
+    strength: Optional[float] = None
+    status: str
+    track_id: Optional[str] = None
+    stream_url: Optional[str] = None
+    error: Optional[str] = None
+    created_at: datetime

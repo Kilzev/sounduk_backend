@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 import models
 import schemas
+import token_service
 from auth_utils import get_current_user, get_verified_user
 from datetime import datetime, timedelta
 from yookassa import Configuration, Payment
@@ -136,26 +137,41 @@ def _require_payment_region(request: Request) -> None:
 Configuration.account_id = YOOKASSA_SHOP_ID
 Configuration.secret_key = YOOKASSA_SECRET_KEY
 
-# Карта товаров: ID -> {цена, описание, лимит, дни}
+# Карта товаров: ID -> {цена, описание, лимит, дни, tokens}
+# storage_pack_* — тариф (хранилище + премиум) + подписочные токены SoundSlop;
+# tokens_* — чистые пакеты токенов (1 токен ≈ 1.5 ₽, context/soundslop_design.md §2).
 PRODUCTS = {
     "storage_pack_3gb": {
         "price": "65.00",
         "description": "Тариф 3 ГБ",
         "limit": 3 * 1024 * 1024 * 1024,
-        "days": 30
+        "days": 30,
+        "tokens": 40,
     },
     "storage_pack_5gb": {
         "price": "99.00",
         "description": "Тариф 5 ГБ",
         "limit": 5 * 1024 * 1024 * 1024,
-        "days": 30
+        "days": 30,
+        "tokens": 80,
     },
     "storage_pack_20gb": {
         "price": "220.00",
         "description": "Тариф 20 ГБ",
         "limit": 20 * 1024 * 1024 * 1024,
-        "days": 30
-    }
+        "days": 30,
+        "tokens": 150,
+    },
+    "tokens_100": {
+        "price": "149.00",
+        "description": "Пакет 100 токенов SoundSlop",
+        "tokens": 100,
+    },
+    "tokens_500": {
+        "price": "599.00",
+        "description": "Пакет 500 токенов SoundSlop",
+        "tokens": 500,
+    },
 }
 
 def grant_premium_access(db: Session, user: models.User, product_id: str):
@@ -182,6 +198,32 @@ def grant_premium_access(db: Session, user: models.User, product_id: str):
     db.add(user) # ensure tracked
     db.commit()
     db.refresh(user)
+
+
+def grant_product(
+    db: Session, user: models.User, product_id: str, ref_id: str | None = None
+):
+    """Единая точка выдачи покупки: тариф/токены + начисление в ledger.
+
+    Идемпотентность по ref_id (payment_id): повтор webhook/poll не доначислит.
+    """
+    product = PRODUCTS.get(product_id)
+    tokens = int(product.get("tokens", 0)) if product else 0
+
+    if product and "limit" in product:
+        grant_premium_access(db, user, product_id)
+        if tokens > 0:
+            token_service.apply_transaction(
+                db, user=user, delta=tokens, reason="subscription", ref_id=ref_id
+            )
+    elif product:
+        # Чистый пакет токенов
+        if tokens > 0:
+            token_service.apply_transaction(
+                db, user=user, delta=tokens, reason="token_purchase", ref_id=ref_id
+            )
+    else:
+        grant_premium_access(db, user, product_id)
 
 
 @router.get("/eligibility", response_model=schemas.PaymentEligibilityResponse)
@@ -303,7 +345,9 @@ async def check_payment_status(
             db.commit()
             
             if status_kassa == "succeeded":
-                grant_premium_access(db, current_user, db_payment.product_id)
+                grant_product(
+                    db, current_user, db_payment.product_id, ref_id=db_payment.id
+                )
 
         return schemas.PaymentStatusResponse(status=status_kassa)
 
@@ -318,7 +362,9 @@ async def check_payment_status(
              if db_payment.status == "pending":
                   db_payment.status = "succeeded"
                   db.commit()
-                  grant_premium_access(db, current_user, db_payment.product_id)
+                  grant_product(
+                      db, current_user, db_payment.product_id, ref_id=db_payment.id
+                  )
                   return schemas.PaymentStatusResponse(status="succeeded")
 
         return schemas.PaymentStatusResponse(status=db_payment.status)
@@ -359,7 +405,7 @@ async def yookassa_webhook(request: Request, db: Session = Depends(get_db)):
             
             user = db.query(models.User).filter(models.User.id == user_id).first()
             if user:
-                grant_premium_access(db, user, product_id)
+                grant_product(db, user, product_id, ref_id=payment_id)
         
         return Response(status_code=200)
     except Exception as e:
@@ -377,8 +423,14 @@ async def mock_payment_legacy(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Not found",
         )
-    grant_premium_access(db, current_user, payment.product_id)
+    grant_product(
+        db,
+        current_user,
+        payment.product_id,
+        ref_id=f"mock:{current_user.id}:{payment.product_id}",
+    )
+    db.refresh(current_user)
     return schemas.PaymentResponse(
-        is_premium=True,
+        is_premium=current_user.is_premium,
         expires_at=current_user.premium_expires_at
     )

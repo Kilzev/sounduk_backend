@@ -1,5 +1,5 @@
 # models.py - Модели базы данных
-from sqlalchemy import Integer, String, ForeignKey, DateTime, Boolean, BigInteger, Text, LargeBinary, JSON
+from sqlalchemy import Integer, String, ForeignKey, DateTime, Boolean, BigInteger, Text, LargeBinary, JSON, Float, UniqueConstraint
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from database import Base
 from datetime import datetime
@@ -29,6 +29,8 @@ class User(Base):
     # Per-account feature: YouTube / link import (not tied to Premium)
     allow_youtube_import: Mapped[bool] = mapped_column(Boolean, default=False)
     library_revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    # Внутренняя валюта SoundSlop (баланс — производное ledger token_transactions)
+    tokens_balance: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     tracks: Mapped[List["Track"]] = relationship("Track", back_populates="owner", cascade="all, delete-orphan")
     payments: Mapped[List["Payment"]] = relationship("Payment", back_populates="user", cascade="all, delete-orphan")
@@ -162,6 +164,60 @@ class ImportJobItem(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
 
     job: Mapped["ImportJob"] = relationship("ImportJob", back_populates="items")
+
+
+class TokenTransaction(Base):
+    """Ledger токенов SoundSlop. Баланс = SUM(delta); users.tokens_balance — кэш.
+
+    reason: subscription | token_purchase | ad_reward | generation |
+            storage_redeem | llm | admin_grant | refund
+    Идемпотентность: уникальный (reason, ref_id); повтор → без изменений.
+    """
+    __tablename__ = "token_transactions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False, index=True
+    )
+    delta: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String, nullable=False)
+    ref_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("reason", "ref_id", name="uq_token_txn_reason_ref"),
+    )
+
+
+class SoundSlopJob(Base):
+    """Задача генерации музыки (text / audio / extend). Job-паттерн:
+    HTTP не держим (1 uvicorn worker), клиент поллит статус."""
+    __tablename__ = "soundslop_jobs"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("users.id"), nullable=False, index=True
+    )
+    mode: Mapped[str] = mapped_column(String, nullable=False, default="text")
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    duration_sec: Mapped[int] = mapped_column(Integer, nullable=False, default=120)
+    instrumental: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_track_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    strength: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="queued", index=True
+    )  # queued | running | succeeded | failed
+    cost: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    result_track_id: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class RadioStation(Base):
